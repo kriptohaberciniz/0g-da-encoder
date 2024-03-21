@@ -1231,8 +1231,11 @@ Let's see how this gets encoded and then reconstructed by sampling only some dat
         println!("Commitment: {commitment:?}");
 
         // We artificially extend the matrix by doubling values, this is not proper erasure coding.
-        let ext_m =
-            DMatrix::from_row_iterator(1, row.len().checked_mul(2).unwrap(), row.into_iter().flat_map(|e| vec![e, e]));
+        let ext_m = DMatrix::from_row_iterator(
+            1,
+            row.len().checked_mul(2).unwrap(),
+            row.into_iter().flat_map(|e| vec![e, e]),
+        );
 
         let rows: u16 = len.try_into().expect("rows length should be valid `u16`");
         let metrics = IgnoreMetrics {};

@@ -165,9 +165,7 @@ impl EncoderService {
                     chunks: extended_grid.to_bytes()?,
                 })
             }
-            Err(message) => {
-                Err(format!("Error extending grid: {:?}", message))
-            }
+            Err(message) => Err(format!("Error extending grid: {:?}", message)),
         }
     }
 }

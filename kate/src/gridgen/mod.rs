@@ -17,7 +17,6 @@ use poly_multiproof::{
     traits::{KZGProof, PolyMultiProofNoPrecomp},
 };
 
-
 use static_assertions::const_assert;
 
 use thiserror_no_std::Error;

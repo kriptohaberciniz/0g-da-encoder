@@ -6,6 +6,7 @@ members = [
 	"kate",
 	"grpc",
 	"types",
+	"server",
 ]
 
 [profile.dev.package]
