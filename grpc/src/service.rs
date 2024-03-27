@@ -127,7 +127,7 @@ impl EncoderService {
         let maybe_grid = self.build_grid(data, blob_length);
         let grid = match maybe_grid {
             Ok(res) => {
-                debug!("build grid used {:?}ms", timer.elapsed().as_millis());
+                info!("build grid used {:?}ms", timer.elapsed().as_millis());
                 timer = std::time::Instant::now();
                 res
             }
@@ -141,7 +141,7 @@ impl EncoderService {
         let maybe_commitment = self.build_commitment(&grid);
         let commitment = match maybe_commitment {
             Ok(res) => {
-                debug!("build commitment used {:?}ms", timer.elapsed().as_millis());
+                info!("build commitment used {:?}ms", timer.elapsed().as_millis());
                 timer = std::time::Instant::now();
                 res
             }
@@ -155,9 +155,14 @@ impl EncoderService {
 
         match grid.extend_columns(NonZeroU16::new(2).expect("2>0")) {
             Ok(extended_grid) => {
-                debug!("extend grid used {:?}ms", timer.elapsed().as_millis());
                 let rows = extended_grid.dims().rows().get();
                 let cols = extended_grid.dims().cols().get();
+                info!(
+                    "extend grid used {:?}ms, extended matrix dims: {:?}x{:?}.",
+                    timer.elapsed().as_millis(),
+                    rows,
+                    cols
+                );
                 Ok(EncodeBlobReply {
                     rows: rows.into(),
                     cols: cols.into(),
