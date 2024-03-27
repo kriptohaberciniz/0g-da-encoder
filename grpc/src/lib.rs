@@ -1,12 +1,12 @@
 use std::net::SocketAddr;
 
-use service::{encoder::encoder_server::EncoderServer, EncoderService};
+pub use service::{encoder::encoder_server::EncoderServer, EncoderService};
 use tonic::transport::Server;
 
 #[macro_use]
 extern crate tracing;
 
-mod service;
+pub mod service;
 
 const MESSAGE_SIZE_LIMIT: usize = 1024 * 1024 * 1024; // 1G
 

@@ -55,6 +55,12 @@ impl Encoder for EncoderService {
     }
 }
 
+impl Default for EncoderService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EncoderService {
     pub fn new() -> Self {
         EncoderService {
@@ -117,7 +123,7 @@ impl EncoderService {
         Ok(commitment)
     }
 
-    fn build_extension(
+    pub fn build_extension(
         &self,
         data: Vec<u8>,
         blob_length: BlobLength,
