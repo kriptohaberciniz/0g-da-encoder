@@ -4424,6 +4424,7 @@ version = "0.1.0"
 dependencies = [
  "grpc",
  "kate",
+ "kate-recovery",
  "rand",
  "tokio",
  "tracing",
