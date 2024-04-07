@@ -169,6 +169,21 @@ impl EvaluationGrid {
         }
         Ok(result)
     }
+
+    pub fn from_row_slices(nrows: usize, ncols: usize, data: Vec<u8>) -> Result<Self, Error> {
+        if nrows * ncols * SCALAR_SIZE != data.len() {
+            return Err(Error::DimensionsMismatch);
+        }
+        let scalars = data
+            .chunks(SCALAR_SIZE)
+            .map(|buf| {
+                ArkScalar::from_bytes(buf.try_into().unwrap()).map_err(Error::MultiproofError)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            evals: DMatrix::from_row_iterator(nrows, ncols, scalars.into_iter()),
+        })
+    }
 }
 
 pub struct PolynomialGrid {
