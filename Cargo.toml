@@ -2,13 +2,21 @@
 resolver = "2"
 members = [
 	"core",
-	"kate/recovery",
-	"kate",
+	"crates/kate-recovery",
+	"crates/kate",
 	"grpc",
 	"types",
 	"server",
 	"stress",
 ]
+
+[workspace.dependencies]
+zerog-core = { path = "./core", default-features = false } 
+kate = { path = "./crates/kate" } 
+types = { path = "./types" }
+kate-recovery = { path = "./crates/kate-recovery", default-features = false } 
+grpc = { path = "./grpc" } 
+server = { path = "./server" } 
 
 [profile.dev.package]
 nalgebra = { opt-level = 3 }

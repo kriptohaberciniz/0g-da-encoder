@@ -1,7 +1,8 @@
 use dusk_plonk::commitment_scheme::kzg10::PublicParameters;
 
+const PP_BYTES: &'static [u8] = include_bytes!("../data/pp_1024.data");
+
 pub fn public_params() -> PublicParameters {
-    let pp_bytes = include_bytes!("../../src/pp_1024.data");
-    PublicParameters::from_slice(pp_bytes)
+    PublicParameters::from_slice(PP_BYTES)
         .expect("Deserialising of public parameters should work for serialised pp")
 }
