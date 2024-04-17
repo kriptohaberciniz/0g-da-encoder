@@ -4,6 +4,7 @@ members = [
 	"core",
 	"crates/kate-recovery",
 	"crates/kate",
+	"crates/encoder",
 	"grpc",
 	"types",
 	"server",
@@ -12,11 +13,12 @@ members = [
 
 [workspace.dependencies]
 zerog-core = { path = "./core", default-features = false } 
-kate = { path = "./crates/kate" } 
+kate = { path = "./crates/kate", default-features = false } 
 types = { path = "./types" }
 kate-recovery = { path = "./crates/kate-recovery", default-features = false } 
 grpc = { path = "./grpc" } 
 server = { path = "./server" } 
+encoder = {path = "./crates/encoder" }
 
 [profile.dev.package]
 nalgebra = { opt-level = 3 }
