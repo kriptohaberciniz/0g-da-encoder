@@ -1,9 +1,9 @@
-use super::error;
-use super::export::{
+use crate::error;
+use crate::ec_algebra::{
     AffineRepr, CanonicalDeserialize, CanonicalSerialize, CurveGroup, Fr, G1Aff, G2Aff, Pairing,
-     UniformRand, G1, G2,
+    UniformRand, G1, G2,
 };
-use super::pp_file_name;
+use crate::pp_file_name;
 use ark_ff::utils::k_adicity;
 use ark_ff::Field;
 use rand;
@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use std::fs::{create_dir_all, File};
 use std::path::Path;
 
-#[derive(CanonicalDeserialize, CanonicalSerialize)]
+#[derive(CanonicalDeserialize, CanonicalSerialize, Clone)]
 pub struct PowerTau<PE: Pairing>(pub Vec<G1Aff<PE>>, pub Vec<G2Aff<PE>>);
 
 fn power_tau<'a, G: AffineRepr>(gen: &'a G, tau: &'a G::ScalarField, length: usize) -> Vec<G> {
@@ -119,7 +119,7 @@ fn test_partial_load() {
 
 #[test]
 fn test_parallel_build() {
-    use crate::export::CurveGroup;
+    use crate::ec_algebra::CurveGroup;
 
     const DEPTH: usize = 13;
     type Pairing = ark_bn254::Bn254;

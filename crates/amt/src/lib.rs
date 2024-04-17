@@ -1,5 +1,5 @@
 mod error;
-pub mod export;
+pub mod ec_algebra;
 mod power_tau;
 mod prove_params;
 mod utils;

@@ -1,15 +1,18 @@
 #![allow(unused)]
 
-use super::error;
-use super::export::{
+use crate::error;
+use crate::ec_algebra::{
     k_adicity, AffineRepr, BigInteger, CanonicalDeserialize, CanonicalSerialize, CurveGroup,
     EvaluationDomain, FftField, Field, Fr, FrInt, G2Aff, Group, One, Pairing,
-    Radix2EvaluationDomain, Zero, G1, G2,
+    Radix2EvaluationDomain, UniformRand, VariableBaseMSM, Zero, G1, G2,G1Aff
 };
-use super::power_tau::PowerTau;
-use super::utils::amtp_file_name;
+use crate::power_tau::PowerTau;
+use crate::utils::amtp_file_name;
 use std::ops::Mul;
 
+#[cfg(test)]
+use ark_bn254::Bn254;
+use ark_poly::domain;
 use rayon::prelude::*;
 
 pub struct AMTParams<PE: Pairing> {
@@ -98,7 +101,7 @@ impl<PE: Pairing> AMTParams<PE> {
 
         let fft_domain = Radix2EvaluationDomain::<Fr<PE>>::new(length).unwrap();
 
-        let commitments: Vec<G1<PE>> = fft_domain.ifft(&g1pp[..]);
+        let idents: Vec<G1<PE>> = fft_domain.ifft(&g1pp[..]);
         let quotients: Vec<Vec<G1<PE>>> = (1..=depth)
             .map(|d| Self::gen_quotients(&g1pp[..], &fft_domain, d))
             .collect();
@@ -107,17 +110,14 @@ impl<PE: Pairing> AMTParams<PE> {
             .collect();
 
         Self {
-            idents: commitments,
+            idents,
             quotients,
             verification,
             g2: g2pp[0],
         }
     }
 
-    fn gen_idents(
-        g1pp: &[G1<PE>],
-        fft_domain: &Radix2EvaluationDomain<Fr<PE>>,
-    ) -> Vec<G1<PE>> {
+    fn gen_idents(g1pp: &[G1<PE>], fft_domain: &Radix2EvaluationDomain<Fr<PE>>) -> Vec<G1<PE>> {
         fft_domain.ifft(&g1pp)
     }
 
@@ -164,16 +164,50 @@ impl<PE: Pairing> AMTParams<PE> {
         let height = max_depth - depth;
         let step = 1 << height;
         let mut fft_domain = Radix2EvaluationDomain::<Fr<PE>>::new(1 << depth).unwrap();
-        let (w, w_inv) = (fft_domain.group_gen, fft_domain.group_gen_inv);
-        fft_domain.group_gen = w_inv;
-        fft_domain.group_gen_inv = w;
+
         let mut coeff = vec![G2::<PE>::zero(); 1 << depth];
 
         coeff[0] = g2pp[length - step];
         for i in 1..length / step {
             coeff[i] = g2pp[(i - 1) * step]
         }
+
+        std::mem::swap(&mut fft_domain.group_gen, &mut fft_domain.group_gen_inv);
         fft_domain.fft(&coeff)
+    }
+}
+
+#[test]
+fn test_coset_consistency() {
+    const TEST_LEVEL: usize = 6;
+    const TEST_LENGTH: usize = 1 << TEST_LEVEL;
+    type Pairing = ark_bn254::Bn254;
+    type TestParams = AMTParams<Pairing>;
+
+    let mut rng = rand::thread_rng();
+    let input = (0..TEST_LENGTH)
+        .map(|_| Fr::<Pairing>::rand(&mut rng))
+        .collect::<Vec<_>>();
+
+    let fft_domain = Radix2EvaluationDomain::<Fr<Pairing>>::new(TEST_LENGTH).unwrap();
+    let fft2_domain = Radix2EvaluationDomain::<Fr<Pairing>>::new(TEST_LENGTH * 2).unwrap();
+
+    let mut coeff = fft_domain.ifft(&input);
+    let mut coset_coeff = coeff.clone();
+    coeff.extend(vec![Fr::<Pairing>::zero(); TEST_LENGTH]);
+
+    let answer = fft2_domain.fft(&coeff[..]);
+
+    for i in 0..TEST_LENGTH {
+        assert_eq!(answer[i * 2], input[i]);
+    }
+
+    coset_coeff.iter_mut().enumerate().for_each(|(idx, x)| {
+        *x *= &fft2_domain.group_gen.pow(&[idx as u64]);
+    });
+    let coset = fft_domain.fft(&coset_coeff);
+    for i in 0..TEST_LENGTH {
+        assert_eq!(answer[i * 2 + 1], coset[i]);
     }
 }
 
@@ -184,7 +218,8 @@ fn test_ident_prove() {
     type Pairing = ark_bn254::Bn254;
     type TestParams = AMTParams<Pairing>;
 
-    let (g1pp, g2pp) = PowerTau::<Pairing>::from_dir_or_new("./pp", TEST_LEVEL).into_projective();
+    let pp = PowerTau::<Pairing>::from_dir_or_new("./pp", TEST_LEVEL);
+    let (g1pp, g2pp) = pp.clone().into_projective();
     let g1 = g1pp[0];
     let g2 = g2pp[0];
     let w = Fr::<Pairing>::get_root_of_unity(TEST_LENGTH as u64).unwrap();
@@ -192,63 +227,70 @@ fn test_ident_prove() {
     assert_eq!(w.pow(&[TEST_LENGTH as u64]), Fr::<Pairing>::one());
 
     let fft_domain = Radix2EvaluationDomain::new(TEST_LENGTH).unwrap();
+    assert_eq!(fft_domain.group_gen, w);
 
-    // Test bottom level
+    let compute_ident = |index| {
+        let mut points = vec![Fr::<Pairing>::zero(); len];
+        points[index] = Fr::<Pairing>::one();
+
+        let coeff = fft_domain.ifft(&points);
+        G1::<Bn254>::msm(&pp.0, &coeff[..]).unwrap()
+    };
     let indents = TestParams::gen_idents(&g1pp[..], &fft_domain);
-    let prove_data = TestParams::gen_quotients(&g1pp[..], &fft_domain, TEST_LEVEL);
-    let verify_data = TestParams::gen_verify(&g2pp[..], TEST_LEVEL);
-
     for t in 0..TEST_LENGTH {
-        let mut answer: G1<Pairing> = g1pp
+        assert_eq!(indents[t], compute_ident(t))
+    }
+
+    let compute_h = |index: usize, depth: usize| -> G1<Pairing> {
+        let size = len / (1 << depth);
+        let coeff: Vec<_> = (0..size)
+            .rev()
+            .map(|j| w.pow(&[(index * j) as u64]))
+            .collect();
+        let base = &pp.0[0..size];
+        coeff[..]
             .iter()
-            .cloned()
-            .enumerate()
-            .map(|(idx, mut val)| {
-                val *= fft_domain.group_gen_inv.pow([(t * idx) as u64]);
-                val
-            })
-            .sum();
-        answer *= fft_domain.size_inv;
-        assert_eq!(indents[t], answer);
-    }
+            .zip(base.iter())
+            .map(|(exp, base)| *base * exp)
+            .sum::<G1<Pairing>>()
+            * fft_domain.size_inv
+            * w.pow(&[index as u64])
+    };
 
-    for t in 0..TEST_LENGTH {
-        let answer: G2<Pairing> = g2pp
+    let compute_verify = |index: usize, depth: usize| -> G2<Pairing> {
+        let step = len / (1 << depth);
+        let size = (1 << depth);
+        let coeff: Vec<_> = (0..size)
+            .rev()
+            .map(|j| w.pow(&[(index * step * j) as u64]))
+            .collect();
+        let base = pp.1.iter().step_by(step);
+        coeff[..]
             .iter()
-            .cloned()
-            .enumerate()
-            .map(|(idx, mut val)| {
-                val *= fft_domain.group_gen.pow([(t * (len - 1 - idx)) as u64]);
-                val
-            })
-            .sum();
-        assert_eq!(verify_data[t], answer);
-    }
-
-    for t in 0..TEST_LENGTH {
-        let mut answer: G1<Pairing> = g1;
-        answer *= fft_domain.group_gen.pow([t as u64]);
-        answer *= fft_domain.size_inv;
-        assert_eq!(prove_data[t], answer);
-    }
-
-    for t in 0..TEST_LENGTH {
-        assert_eq!(
-            Pairing::pairing(indents[t], g2),
-            Pairing::pairing(prove_data[t], verify_data[t])
-        );
-    }
-
-    for depth in (1..TEST_LEVEL).rev() {
+            .zip(base)
+            .map(|(exp, base)| *base * exp)
+            .sum()
+    };
+    for depth in (1..=TEST_LEVEL).rev() {
         dbg!(depth);
         let prove_data = TestParams::gen_quotients(&g1pp[..], &fft_domain, depth);
         let verify_data = TestParams::gen_verify(&g2pp[..], depth);
         for t in 0..TEST_LENGTH {
             dbg!(t);
+            // Test ground truth
+            assert_eq!(
+                Pairing::pairing(compute_ident(t), g2),
+                Pairing::pairing(compute_h(t, depth), compute_verify(t, depth))
+            );
+            // Test produced
             assert_eq!(
                 Pairing::pairing(indents[t], g2),
                 Pairing::pairing(prove_data[t], verify_data[t % (1 << depth)])
             );
+            // Test consistency
+            assert_eq!(indents[t], compute_ident(t));
+            assert_eq!(verify_data[t % (1 << depth)], compute_verify(t, depth));
+            assert_eq!(prove_data[t], compute_h(t, depth));
         }
     }
 }
