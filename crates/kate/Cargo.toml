@@ -12,8 +12,8 @@ license = "Apache-2.0"
 poly-multiproof = { git = "https://github.com/availproject/poly-multiproof", default-features = false, tag = "v0.0.1", optional = true }
 
 # Internal
-zerog-core = { path = "../core", default-features = false }
-kate-recovery = { path = "recovery", default-features = false }
+zerog-core = { workspace = true, default-features = false }
+kate-recovery = { workspace = true, default-features = false }
 
 dusk-plonk = { git = "https://github.com/availproject/plonk.git", tag = "v0.12.0-polygon-2", optional = true }
 

@@ -6,10 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-zerog-core = { path = "../core" }
-kate = { path = "../kate" }
-grpc = { path = "../grpc" }
-types = { path = "../types" }
+zerog-core = { workspace = true }
+kate = { workspace = true }
+grpc = { workspace = true }
+types = { workspace = true }
 
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.11", features = ["env-filter"] }

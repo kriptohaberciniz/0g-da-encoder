@@ -7,7 +7,7 @@ license = "Apache-2.0"
 
 [dependencies]
 # Internals
-zerog-core = { path = "../../core", default-features = false }
+zerog-core = { workspace = true, default-features = false }
 dusk-plonk = { git = "https://github.com/availproject/plonk.git", tag = "v0.12.0-polygon-2", default-features = false, optional = true }
 
 # Substrate

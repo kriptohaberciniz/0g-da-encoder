@@ -166,13 +166,7 @@ pub mod couscous {
     use poly_multiproof::ark_serialize::CanonicalDeserialize;
     use poly_multiproof::m1_blst;
     use poly_multiproof::m1_blst::{G1, G2};
-
-    /// Constructs public parameters from pre-generated points for degree upto 1024
-    pub fn public_params() -> PublicParameters {
-        // We can also use the raw data to make deserilization faster at the cost of size of the data
-        let pp_bytes = include_bytes!("pp_1024.data");
-        PublicParameters::from_slice(pp_bytes).expect("Deserialization should work")
-    }
+    pub use kate_recovery::couscous::public_params;
 
     // Loads the pre-generated trusted g1 & g2 from the file
     fn load_trusted_g1_g2() -> (Vec<G1>, Vec<G2>) {
