@@ -11,7 +11,8 @@ ark-bn254 = "0.4.0"
 ark-ff = "0.4.0"
 ark-poly = { version = "0.4.0", features = ["parallel"] }
 ark-std = { version = "0.4.0", features = ["getrandom"] }
-ark-ec = "0.4.0"
+ark-ec = { version = "0.4.0", features = ["parallel"] }
+ark-serialize = { version = "0.4", features = ["derive"] }
 
 [dev-dependencies]
 rand = "0.8"
