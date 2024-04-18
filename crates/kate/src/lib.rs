@@ -163,10 +163,10 @@ pub mod testnet {
 #[cfg(feature = "std")]
 pub mod couscous {
     use super::*;
+    pub use kate_recovery::couscous::public_params;
     use poly_multiproof::ark_serialize::CanonicalDeserialize;
     use poly_multiproof::m1_blst;
     use poly_multiproof::m1_blst::{G1, G2};
-    pub use kate_recovery::couscous::public_params;
 
     // Loads the pre-generated trusted g1 & g2 from the file
     fn load_trusted_g1_g2() -> (Vec<G1>, Vec<G2>) {
