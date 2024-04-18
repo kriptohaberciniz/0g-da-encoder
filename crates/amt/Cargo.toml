@@ -17,8 +17,7 @@ ark-std = "0.4"
 ark-poly = "0.4"
 ark-serialize = "0.4"
 
+once_cell = "1.19"
+
 [dev-dependencies]
 ark-bn254 = "0.4"
-
-[features]
-no_cache_pow = []

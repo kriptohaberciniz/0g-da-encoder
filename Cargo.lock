@@ -97,6 +97,7 @@ dependencies = [
  "ark-std",
  "base64 0.22.0",
  "error-chain",
+ "once_cell",
  "rand",
  "rayon",
 ]

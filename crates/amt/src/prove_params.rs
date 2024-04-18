@@ -1,123 +1,98 @@
-#![allow(unused)]
-
-use crate::error;
 use crate::ec_algebra::{
-    k_adicity, AffineRepr, BigInteger, CanonicalDeserialize, CanonicalSerialize, CurveGroup,
-    EvaluationDomain, FftField, Field, Fr, FrInt, G2Aff, Group, One, Pairing,
-    Radix2EvaluationDomain, UniformRand, VariableBaseMSM, Zero, G1, G2,G1Aff
+    k_adicity, AffineRepr, CanonicalDeserialize, CanonicalSerialize, EvaluationDomain, Field, Fr,
+    G1Aff, G2Aff, One, Pairing, Radix2EvaluationDomain, Zero, G1, G2,
 };
+use crate::error;
 use crate::power_tau::PowerTau;
-use crate::utils::amtp_file_name;
-use std::ops::Mul;
+use crate::proofs::{AllProofs, AmtProofError, Proof};
+use crate::utils::{amtp_file_name, index_reverse};
 
-#[cfg(test)]
-use ark_bn254::Bn254;
-use ark_poly::domain;
+use ark_ec::{CurveGroup, VariableBaseMSM};
+use ark_ff::FftField;
 use rayon::prelude::*;
 
+#[derive(CanonicalDeserialize, CanonicalSerialize)]
 pub struct AMTParams<PE: Pairing> {
-    idents: Vec<G1<PE>>,
-    quotients: Vec<Vec<G1<PE>>>,
-    verification: Vec<Vec<G2<PE>>>,
-    g2: G2<PE>,
+    pub basis: Vec<G1Aff<PE>>,
+    pub quotients: Vec<Vec<G1Aff<PE>>>,
+    pub vanishes: Vec<Vec<G2Aff<PE>>>,
+    pub g2: G2<PE>,
 }
 
 impl<PE: Pairing> AMTParams<PE> {
-    pub fn get_commitments(&self, index: usize) -> &G1<PE> {
-        &self.idents[index]
-    }
+    pub fn from_dir(dir: &str, expected_depth: usize, create_mode: bool, coset: bool) -> Self {
+        let path = Path::new(dir).join(amtp_file_name::<PE>(expected_depth, coset));
+        let file = path.to_str().unwrap();
 
-    pub fn get_quotient(&self, depth: usize, index: usize) -> &G1<PE> {
-        &self.quotients[depth - 1][index]
-    }
+        if let Ok(params) = Self::load_cached(file) {
+            return params;
+        }
 
-    pub fn get_sibling_verification(&self, depth: usize, mut index: usize) -> &G2<PE> {
-        index &= (1 << depth) - 1;
-        index ^= 1 << (depth - 1);
-        &self.verification[depth - 1][index]
-    }
+        let pp = PowerTau::<PE>::from_dir(dir, expected_depth, create_mode);
 
-    pub fn g2(&self) -> G2<PE> {
-        self.g2
-    }
+        let params = Self::from_pp(pp, coset);
+        let buffer = File::create(file).unwrap();
 
-    pub fn get_idents_pow(&self, index: usize, power: &FrInt<PE>) -> G1<PE> {
-        self.idents[index].mul_bigint(power)
-    }
+        params.serialize_uncompressed(&buffer).unwrap();
 
-    pub fn get_quotient_pow(&self, depth: usize, index: usize, power: &FrInt<PE>) -> G1<PE> {
-        self.quotients[depth - 1][index].mul_bigint(power)
+        params
     }
 
     fn load_cached(file: &str) -> Result<Self, error::Error> {
         let mut buffer = File::open(file)?;
-        let commitments: Vec<G1<PE>> =
-            CanonicalDeserialize::deserialize_uncompressed_unchecked(&mut buffer)?;
-        let quotients: Vec<Vec<G1<PE>>> =
-            CanonicalDeserialize::deserialize_uncompressed_unchecked(&mut buffer)?;
-        let verification: Vec<Vec<G2<PE>>> =
-            CanonicalDeserialize::deserialize_uncompressed_unchecked(&mut buffer)?;
-        let length = commitments.len();
-        let depth = k_adicity(2, length as u64) as usize;
-        Ok(Self {
-            idents: commitments,
-            quotients,
-            verification,
-            g2: CanonicalDeserialize::deserialize_uncompressed_unchecked(&mut buffer)?,
-        })
+        Ok(CanonicalDeserialize::deserialize_uncompressed_unchecked(
+            &mut buffer,
+        )?)
     }
 
-    pub fn from_dir(dir: &str, expected_depth: usize, create_mode: bool) -> Self {
-        let path = Path::new(dir).join(amtp_file_name::<PE>(expected_depth));
-        let file = path.to_str().unwrap();
-        match Self::load_cached(file) {
-            Ok(params) => params,
-            Err(_) => {
-                let pp = if create_mode {
-                    PowerTau::<PE>::from_dir_or_new(dir, expected_depth)
-                } else {
-                    PowerTau::<PE>::from_dir(dir, expected_depth)
-                };
-
-                let params = Self::from_pp(pp);
-                let buffer = File::create(file).unwrap();
-
-                params.idents.serialize_uncompressed(&buffer).unwrap();
-                params.quotients.serialize_uncompressed(&buffer).unwrap();
-                params.verification.serialize_uncompressed(&buffer).unwrap();
-                params.g2.serialize_uncompressed(&buffer).unwrap();
-
-                params
-            }
-        }
+    pub fn len(&self) -> usize {
+        self.basis.len()
     }
 
-    fn from_pp(pp: PowerTau<PE>) -> Self {
-        let (g1pp, g2pp) = pp.into_projective();
+    fn enact<T: CurveGroup>(input: Vec<T>) -> Vec<<T as CurveGroup>::Affine> {
+        let mut affine = CurveGroup::normalize_batch(input.as_slice());
+        index_reverse(&mut affine);
+        affine
+    }
+
+    pub fn from_pp(pp: PowerTau<PE>, coset: bool) -> Self {
+        let (mut g1pp, mut g2pp) = pp.into_projective();
 
         assert_eq!(g1pp.len(), g2pp.len());
+        assert!(g1pp.len().is_power_of_two());
         let length = g1pp.len();
-        let depth = k_adicity(2, length as u64) as usize;
+        let depth = ark_std::log2(length) as usize;
+
+        if coset {
+            let w = Fr::<PE>::one()
+                / <Fr<PE> as FftField>::get_root_of_unity(length as u64 * 2).unwrap();
+            g1pp.iter_mut()
+                .enumerate()
+                .for_each(|(idx, x)| *x *= w.pow(&[idx as u64]));
+            g2pp.iter_mut()
+                .enumerate()
+                .for_each(|(idx, x)| *x *= w.pow(&[idx as u64]));
+        }
 
         let fft_domain = Radix2EvaluationDomain::<Fr<PE>>::new(length).unwrap();
 
-        let idents: Vec<G1<PE>> = fft_domain.ifft(&g1pp[..]);
-        let quotients: Vec<Vec<G1<PE>>> = (1..=depth)
-            .map(|d| Self::gen_quotients(&g1pp[..], &fft_domain, d))
+        let basis: Vec<G1Aff<PE>> = Self::enact(Self::gen_basis(&g1pp[..], &fft_domain));
+        let quotients: Vec<Vec<G1Aff<PE>>> = (1..=depth)
+            .map(|d| Self::enact(Self::gen_quotients(&g1pp[..], &fft_domain, d)))
             .collect();
-        let verification: Vec<Vec<G2<PE>>> = (1..=depth)
-            .map(|d| Self::gen_verify(&g2pp[..], d))
+        let vanishes: Vec<Vec<G2Aff<PE>>> = (1..=depth)
+            .map(|d| Self::enact(Self::gen_vanishes(&g2pp[..], d)))
             .collect();
 
         Self {
-            idents,
+            basis,
             quotients,
-            verification,
+            vanishes,
             g2: g2pp[0],
         }
     }
 
-    fn gen_idents(g1pp: &[G1<PE>], fft_domain: &Radix2EvaluationDomain<Fr<PE>>) -> Vec<G1<PE>> {
+    fn gen_basis(g1pp: &[G1<PE>], fft_domain: &Radix2EvaluationDomain<Fr<PE>>) -> Vec<G1<PE>> {
         fft_domain.ifft(&g1pp)
     }
 
@@ -150,7 +125,7 @@ impl<PE: Pairing> AMTParams<PE> {
         answer
     }
 
-    fn gen_verify(g2pp: &[G2<PE>], depth: usize) -> Vec<G2<PE>> {
+    fn gen_vanishes(g2pp: &[G2<PE>], depth: usize) -> Vec<G2<PE>> {
         println!("gen_proof level {}", depth);
         assert!(g2pp.len() <= 1 << 32);
 
@@ -177,135 +152,326 @@ impl<PE: Pairing> AMTParams<PE> {
     }
 }
 
-#[test]
-fn test_coset_consistency() {
-    const TEST_LEVEL: usize = 6;
-    const TEST_LENGTH: usize = 1 << TEST_LEVEL;
-    type Pairing = ark_bn254::Bn254;
-    type TestParams = AMTParams<Pairing>;
-
-    let mut rng = rand::thread_rng();
-    let input = (0..TEST_LENGTH)
-        .map(|_| Fr::<Pairing>::rand(&mut rng))
-        .collect::<Vec<_>>();
-
-    let fft_domain = Radix2EvaluationDomain::<Fr<Pairing>>::new(TEST_LENGTH).unwrap();
-    let fft2_domain = Radix2EvaluationDomain::<Fr<Pairing>>::new(TEST_LENGTH * 2).unwrap();
-
-    let mut coeff = fft_domain.ifft(&input);
-    let mut coset_coeff = coeff.clone();
-    coeff.extend(vec![Fr::<Pairing>::zero(); TEST_LENGTH]);
-
-    let answer = fft2_domain.fft(&coeff[..]);
-
-    for i in 0..TEST_LENGTH {
-        assert_eq!(answer[i * 2], input[i]);
+impl<PE: Pairing> AMTParams<PE>
+where
+    G1<PE>: VariableBaseMSM<MulBase = G1Aff<PE>>,
+{
+    #[allow(unused)]
+    pub(crate) fn commitment(&self, ri_data: &[Fr<PE>]) -> G1<PE> {
+        VariableBaseMSM::msm(self.basis.as_slice(), ri_data).unwrap()
     }
 
-    coset_coeff.iter_mut().enumerate().for_each(|(idx, x)| {
-        *x *= &fft2_domain.group_gen.pow(&[idx as u64]);
-    });
-    let coset = fft_domain.fft(&coset_coeff);
-    for i in 0..TEST_LENGTH {
-        assert_eq!(answer[i * 2 + 1], coset[i]);
+    pub fn gen_commitment_tree(
+        &self,
+        ri_data: &[Fr<PE>],
+        batch_size: usize,
+    ) -> (G1Aff<PE>, Vec<Vec<G1Aff<PE>>>) {
+        assert!(batch_size.is_power_of_two());
+        assert!(batch_size <= self.len());
+
+        let scalars = ri_data.chunks_exact(batch_size);
+        let last_layer = self
+            .basis
+            .chunks_exact(batch_size)
+            .zip(scalars)
+            .map(|(base, scalar)| VariableBaseMSM::msm(base, scalar).unwrap())
+            .collect::<Vec<G1<PE>>>();
+
+        let mut answer = VecDeque::new();
+        let mut last_layer = CurveGroup::normalize_batch(&last_layer);
+        while last_layer.len() > 1 {
+            let next_layer = last_layer
+                .chunks_exact(2)
+                .map(|x| x[0] + x[1])
+                .collect::<Vec<_>>();
+            let mut to_push_layer = CurveGroup::normalize_batch(&next_layer);
+            std::mem::swap(&mut last_layer, &mut to_push_layer);
+            answer.push_front(to_push_layer);
+        }
+        (last_layer[0], answer.into())
+    }
+
+    pub fn gen_prove_tree(&self, ri_data: &[Fr<PE>], batch_size: usize) -> Vec<Vec<G1Aff<PE>>> {
+        assert!(batch_size.is_power_of_two());
+        assert!(batch_size < self.len());
+        assert_eq!(ri_data.len(), self.len());
+
+        let last_depth = ark_std::log2(self.len() / batch_size) as usize;
+
+        let mut answer = vec![];
+        for depth in 1..=last_depth {
+            let items = 1 << depth;
+            let chunk_size = self.len() / items;
+            let scalars = ri_data.chunks_exact(chunk_size);
+
+            let quotients = self.quotients[depth - 1]
+                .chunks_exact(chunk_size)
+                .zip(scalars)
+                .map(|(base, scalar)| VariableBaseMSM::msm(base, scalar).unwrap())
+                .collect::<Vec<G1<PE>>>();
+            answer.push(CurveGroup::normalize_batch(quotients.as_slice()))
+        }
+        answer
+    }
+
+    pub fn gen_all_proofs(&self, ri_data: &[Fr<PE>], batch_size: usize) -> (G1<PE>, AllProofs<PE>) {
+        let proofs = self.gen_prove_tree(ri_data, batch_size);
+        let (commitment, commitments) = self.gen_commitment_tree(ri_data, batch_size);
+        let all_proofs = AllProofs {
+            commitments,
+            proofs,
+            input_len: self.len(),
+            batch_size,
+        };
+        (commitment.into_group(), all_proofs)
+    }
+
+    pub fn verify_proof(
+        &self,
+        ri_data: &[Fr<PE>],
+        batch_index: usize,
+        proof: &Proof<PE>,
+        commitment: G1<PE>,
+    ) -> Result<(), AmtProofError> {
+        use AmtProofError::*;
+
+        let proof_depth = proof.len();
+        let num_batch = 1 << proof_depth;
+        let batch = self.len() / num_batch;
+
+        if batch != ri_data.len() {
+            return Err(UnexpectedDataLength);
+        }
+        if batch_index >= num_batch {
+            return Err(IncorrectPosition);
+        }
+        assert!(batch_index < num_batch);
+
+        let self_commitment: G1<PE> = VariableBaseMSM::msm(
+            &self.basis[batch_index * batch..(batch_index + 1) * batch],
+            ri_data,
+        )
+        .unwrap();
+
+        let mut overall_commitment = self_commitment;
+        for (d, (commitment, quotient)) in proof.iter().enumerate().rev() {
+            let vanish_index = batch_index >> (proof_depth - 1 - d);
+            let vanish = self.vanishes[d][vanish_index ^ 1];
+            if PE::pairing(commitment, self.g2) != PE::pairing(quotient, vanish) {
+                return Err(KzgError(d));
+            }
+            overall_commitment += commitment;
+        }
+        if overall_commitment != commitment {
+            Err(InconsistentCommitment)
+        } else {
+            Ok(())
+        }
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ec_algebra::{Field, One, UniformRand, VariableBaseMSM};
+    use ark_ec::AffineRepr;
+    use once_cell::sync::Lazy;
 
-#[test]
-fn test_ident_prove() {
-    const TEST_LEVEL: usize = 6;
+    const TEST_LEVEL: usize = 8;
     const TEST_LENGTH: usize = 1 << TEST_LEVEL;
-    type Pairing = ark_bn254::Bn254;
-    type TestParams = AMTParams<Pairing>;
+    type PE = ark_bn254::Bn254;
+    type TestParams = AMTParams<PE>;
 
-    let pp = PowerTau::<Pairing>::from_dir_or_new("./pp", TEST_LEVEL);
-    let (g1pp, g2pp) = pp.clone().into_projective();
-    let g1 = g1pp[0];
-    let g2 = g2pp[0];
-    let w = Fr::<Pairing>::get_root_of_unity(TEST_LENGTH as u64).unwrap();
-    let len = TEST_LENGTH;
-    assert_eq!(w.pow(&[TEST_LENGTH as u64]), Fr::<Pairing>::one());
+    static PP: Lazy<PowerTau<PE>> =
+        Lazy::new(|| PowerTau::<PE>::from_dir("./pp", TEST_LEVEL, true));
 
-    let fft_domain = Radix2EvaluationDomain::new(TEST_LENGTH).unwrap();
-    assert_eq!(fft_domain.group_gen, w);
+    static AMT: Lazy<AMTParams<PE>> = Lazy::new(|| AMTParams::from_pp(PP.clone(), false));
 
-    let compute_ident = |index| {
-        let mut points = vec![Fr::<Pairing>::zero(); len];
-        points[index] = Fr::<Pairing>::one();
+    static G1PP: Lazy<Vec<G1<PE>>> =
+        Lazy::new(|| PP.0.iter().copied().map(|x| G1::<PE>::from(x)).collect());
 
-        let coeff = fft_domain.ifft(&points);
-        G1::<Bn254>::msm(&pp.0, &coeff[..]).unwrap()
-    };
-    let indents = TestParams::gen_idents(&g1pp[..], &fft_domain);
-    for t in 0..TEST_LENGTH {
-        assert_eq!(indents[t], compute_ident(t))
+    static G2PP: Lazy<Vec<G2<PE>>> =
+        Lazy::new(|| PP.1.iter().copied().map(|x| G2::<PE>::from(x)).collect());
+
+    static DOMAIN: Lazy<Radix2EvaluationDomain<Fr<PE>>> =
+        Lazy::new(|| Radix2EvaluationDomain::new(TEST_LENGTH).unwrap());
+
+    static W: Lazy<Fr<PE>> = Lazy::new(|| DOMAIN.group_gen);
+
+    fn random_scalars(length: usize) -> Vec<Fr<PE>> {
+        let mut rng = rand::thread_rng();
+        (0..length)
+            .map(|_| Fr::<PE>::rand(&mut rng))
+            .collect::<Vec<_>>()
     }
 
-    let compute_h = |index: usize, depth: usize| -> G1<Pairing> {
-        let size = len / (1 << depth);
-        let coeff: Vec<_> = (0..size)
-            .rev()
-            .map(|j| w.pow(&[(index * j) as u64]))
-            .collect();
-        let base = &pp.0[0..size];
-        coeff[..]
-            .iter()
-            .zip(base.iter())
-            .map(|(exp, base)| *base * exp)
-            .sum::<G1<Pairing>>()
-            * fft_domain.size_inv
-            * w.pow(&[index as u64])
-    };
+    #[test]
+    fn test_coset_consistency() {
+        let input = random_scalars(TEST_LENGTH);
 
-    let compute_verify = |index: usize, depth: usize| -> G2<Pairing> {
-        let step = len / (1 << depth);
-        let size = (1 << depth);
-        let coeff: Vec<_> = (0..size)
+        let fft_domain = Radix2EvaluationDomain::<Fr<PE>>::new(TEST_LENGTH).unwrap();
+        let fft2_domain = Radix2EvaluationDomain::<Fr<PE>>::new(TEST_LENGTH * 2).unwrap();
+
+        let mut coeff = fft_domain.ifft(&input);
+        let mut coset_coeff = coeff.clone();
+        coeff.extend(vec![Fr::<PE>::zero(); TEST_LENGTH]);
+
+        let answer = fft2_domain.fft(&coeff[..]);
+
+        for i in 0..TEST_LENGTH {
+            assert_eq!(answer[i * 2], input[i]);
+        }
+
+        coset_coeff.iter_mut().enumerate().for_each(|(idx, x)| {
+            *x *= &fft2_domain.group_gen.pow(&[idx as u64]);
+        });
+        let coset = fft_domain.fft(&coset_coeff);
+        for i in 0..TEST_LENGTH {
+            assert_eq!(answer[i * 2 + 1], coset[i]);
+        }
+    }
+
+    fn simple_gen_basis(index: usize) -> G1<PE> {
+        let mut points = vec![Fr::<PE>::zero(); TEST_LENGTH];
+        points[index] = Fr::<PE>::one();
+
+        let coeff = DOMAIN.ifft(&points);
+        G1::<PE>::msm(&PP.0, &coeff[..]).unwrap()
+    }
+
+    #[test]
+    fn test_gen_basis() {
+        let indents = TestParams::gen_basis(&G1PP, &DOMAIN);
+        for t in 0..TEST_LENGTH {
+            assert_eq!(indents[t], simple_gen_basis(t))
+        }
+    }
+
+    fn simple_gen_quotinents(index: usize, depth: usize) -> G1<PE> {
+        let size = TEST_LENGTH / (1 << depth);
+        (0..size)
             .rev()
-            .map(|j| w.pow(&[(index * step * j) as u64]))
-            .collect();
-        let base = pp.1.iter().step_by(step);
-        coeff[..]
-            .iter()
-            .zip(base)
+            .map(|j| W.pow(&[(index * j) as u64]))
+            .zip(PP.0[0..size].iter())
+            .map(|(exp, base)| *base * exp)
+            .sum::<G1<PE>>()
+            * DOMAIN.size_inv
+            * W.pow(&[index as u64])
+    }
+
+    #[test]
+    fn test_gen_quotients() {
+        for depth in (1..=TEST_LEVEL).rev() {
+            let quotients = TestParams::gen_quotients(&G1PP, &DOMAIN, depth);
+            for t in 0..TEST_LENGTH {
+                assert_eq!(quotients[t], simple_gen_quotinents(t, depth));
+            }
+        }
+    }
+
+    fn simple_gen_vanishes(index: usize, depth: usize) -> G2<PE> {
+        let step = TEST_LENGTH / (1 << depth);
+        let size = 1 << depth;
+        (0..size)
+            .rev()
+            .map(|j| W.pow(&[(index * step * j) as u64]))
+            .zip(PP.1.iter().step_by(step))
             .map(|(exp, base)| *base * exp)
             .sum()
-    };
-    for depth in (1..=TEST_LEVEL).rev() {
-        dbg!(depth);
-        let prove_data = TestParams::gen_quotients(&g1pp[..], &fft_domain, depth);
-        let verify_data = TestParams::gen_verify(&g2pp[..], depth);
-        for t in 0..TEST_LENGTH {
-            dbg!(t);
-            // Test ground truth
+    }
+
+    #[test]
+    fn test_gen_vanishes() {
+        for depth in (1..=TEST_LEVEL).rev() {
+            let vanishes = TestParams::gen_vanishes(&G2PP, depth);
+            for t in 0..TEST_LENGTH {
+                assert_eq!(vanishes[t % (1 << depth)], simple_gen_vanishes(t, depth));
+            }
+        }
+    }
+
+    #[test]
+    fn test_simple_gen_params() {
+        for depth in (1..=TEST_LEVEL).rev() {
+            for t in 0..TEST_LENGTH {
+                assert_eq!(
+                    PE::pairing(simple_gen_basis(t), G2PP[0]),
+                    PE::pairing(
+                        simple_gen_quotinents(t, depth),
+                        simple_gen_vanishes(t, depth)
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_gen_params() {
+        let basis = TestParams::gen_basis(&G1PP, &DOMAIN);
+        for depth in (1..=TEST_LEVEL).rev() {
+            let prove_data = TestParams::gen_quotients(&G1PP, &DOMAIN, depth);
+            let verify_data = TestParams::gen_vanishes(&G2PP, depth);
+            for t in 0..TEST_LENGTH {
+                assert_eq!(
+                    PE::pairing(basis[t], G2PP[0]),
+                    PE::pairing(prove_data[t], verify_data[t % (1 << depth)])
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_commitment_tree() {
+        let ri_data = &random_scalars(TEST_LENGTH);
+        for log_batch in 0..=TEST_LEVEL {
             assert_eq!(
-                Pairing::pairing(compute_ident(t), g2),
-                Pairing::pairing(compute_h(t, depth), compute_verify(t, depth))
-            );
-            // Test produced
-            assert_eq!(
-                Pairing::pairing(indents[t], g2),
-                Pairing::pairing(prove_data[t], verify_data[t % (1 << depth)])
-            );
-            // Test consistency
-            assert_eq!(indents[t], compute_ident(t));
-            assert_eq!(verify_data[t % (1 << depth)], compute_verify(t, depth));
-            assert_eq!(prove_data[t], compute_h(t, depth));
+                AMT.commitment(ri_data),
+                AMT.gen_commitment_tree(ri_data, 1 << log_batch)
+                    .0
+                    .into_group()
+            )
+        }
+    }
+
+    fn check_proof_tree(ri_data: &[Fr<PE>], batch: usize) {
+        let (_, commitments) = AMT.gen_commitment_tree(ri_data, batch);
+        let proofs = AMT.gen_prove_tree(ri_data, batch);
+        for d in 0..(TEST_LEVEL - ark_std::log2(batch) as usize) {
+            assert_eq!(commitments[d].len(), 1 << (d + 1));
+            assert_eq!(proofs[d].len(), 1 << (d + 1));
+            assert_eq!(AMT.vanishes[d].len(), 1 << (d + 1));
+            for i in 0..1usize << (d + 1) {
+                assert_eq!(
+                    PE::pairing(commitments[d][i], G2PP[0]),
+                    PE::pairing(proofs[d][i], AMT.vanishes[d][i])
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_proof_tree() {
+        let ri_data = &random_scalars(TEST_LENGTH);
+        for d in 1..TEST_LEVEL {
+            check_proof_tree(ri_data.as_slice(), 1 << d);
+        }
+    }
+
+    #[test]
+    fn test_proof_verify() {
+        let ri_data = random_scalars(TEST_LENGTH);
+        let commitment = AMT.commitment(&ri_data);
+
+        for log_batch in 0..TEST_LEVEL {
+            let batch = 1 << log_batch;
+            let all_proofs = AMT.gen_all_proofs(&ri_data, batch).1;
+            for (index, data) in ri_data.chunks_exact(batch).enumerate() {
+                let proof = all_proofs.get_proof(index);
+                AMT.verify_proof(&data, index, &proof, commitment).unwrap();
+            }
         }
     }
 }
 
-#[inline]
-fn bitreverse(mut n: usize, l: usize) -> usize {
-    let mut r = 0;
-    for _ in 0..l {
-        r = (r << 1) | (n & 1);
-        n >>= 1;
-    }
-    r
-}
-
-use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::fs::File;
 use std::path::Path;
-use std::sync::RwLock;

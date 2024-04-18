@@ -1,8 +1,8 @@
-use crate::error;
 use crate::ec_algebra::{
     AffineRepr, CanonicalDeserialize, CanonicalSerialize, CurveGroup, Fr, G1Aff, G2Aff, Pairing,
     UniformRand, G1, G2,
 };
+use crate::error;
 use crate::pp_file_name;
 use ark_ff::utils::k_adicity;
 use ark_ff::Field;
@@ -75,27 +75,24 @@ impl<PE: Pairing> PowerTau<PE> {
         }
     }
 
-    pub fn from_dir(dir: &str, expected_depth: usize) -> PowerTau<PE> {
+    pub fn from_dir(dir: &str, expected_depth: usize, create_mode: bool) -> PowerTau<PE> {
         let file = &format!("{}/{}", dir, pp_file_name::<PE>(expected_depth));
-        Self::from_dir_inner(file, expected_depth).expect(&format!(
-            "Fail to load public parameters for {} at depth {}, read TODO to generate",
-            std::any::type_name::<PE>(),
-            expected_depth
-        ))
-    }
-
-    pub fn from_dir_or_new(dir: &str, expected_depth: usize) -> PowerTau<PE> {
-        let file = &format!("{}/{}", dir, pp_file_name::<PE>(expected_depth));
-        match Self::from_dir_inner(file, expected_depth) {
-            Ok(pp) => pp,
-            Err(_) => {
-                let pp = Self::setup(expected_depth);
-                create_dir_all(Path::new(file).parent().unwrap()).unwrap();
-                let buffer = File::create(file).unwrap();
-                pp.serialize_uncompressed(&buffer).unwrap();
-                pp
-            }
+        if let Ok(loaded) = Self::from_dir_inner(file, expected_depth) {
+            return loaded;
         }
+        if !create_mode {
+            panic!(
+                "Fail to load public parameters for {} at depth {}, read TODO to generate",
+                std::any::type_name::<PE>(),
+                expected_depth
+            );
+        }
+
+        let pp = Self::setup(expected_depth);
+        create_dir_all(Path::new(file).parent().unwrap()).unwrap();
+        let buffer = File::create(file).unwrap();
+        pp.serialize_compressed(&buffer).unwrap();
+        pp
     }
 
     pub fn into_projective(self) -> (Vec<G1<PE>>, Vec<G2<PE>>) {
