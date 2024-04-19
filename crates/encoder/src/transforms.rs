@@ -1,13 +1,14 @@
 use std::sync::mpsc::SendError;
 
 use crate::types::*;
-use ark_ec::{bn::Bn, AffineRepr, CurveGroup, VariableBaseMSM};
+use ark_ec::{bn::Bn, pairing::{MillerLoopOutput, Pairing, PairingOutput}, AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_std::{iterable::Iterable, Zero};
 use ethereum_types::H256;
-use ark_bn254::{Fr as Scalar, G1Affine, G1Projective};
+use ark_bn254::{Bn254, Fr as Scalar, G1Affine, G1Projective, G2Affine, G2Projective};
 use ark_ff::{fields::Field, MontConfig, PrimeField};
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use ark_serialize::{CanonicalSerialize, SerializationError};
+use ark_poly::polynomial::univariate::DensePolynomial;
 //use once_cell::sync::Lazy;
 // use transpose::transpose;
 
@@ -29,7 +30,7 @@ pub fn rs_encode_blobn_cols(matrix: &mut Vec<Vec<Scalar>>) -> () {
     let domain_blob_row_n2 = Radix2EvaluationDomain::<Scalar>::new(BLOB_ROW_N2).unwrap();
     // RS encode for each row of matrix
     matrix.iter_mut().for_each(|column_data| {
-        domain_blob_row_n.ifft_in_place(column_data);
+        domain_blob_row_n.ifft_in_place(column_data); // coeffs[i] = f_i; f_{BLOB_ROW_N} == 0
         domain_blob_row_n2.fft_in_place(column_data);
     });
 }
@@ -49,25 +50,26 @@ pub fn raw_blob_to_encoded(raw_blob: &RawBlob) -> EncodedBlobEncoded {
     EncodedBlobEncoded(encoded_flatten)
 }
 
-pub fn coeffs_to_commitment(coeffs: &Vec<Scalar>, setup_g1: &SimulateSetupG1) -> G1Affine {
+pub fn coeffs_to_commitment(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> G1Affine {
     let coeffs_repr: Vec<_> = coeffs.iter().map(|x| MontConfig::into_bigint(*x)).collect();
-    G1Projective::msm_bigint(&setup_g1[..coeffs_repr.len()], &coeffs_repr).into_affine()
+    G1Projective::msm_bigint(&setup.setup_g1[..coeffs_repr.len()], &coeffs_repr).into_affine()
+    //G1Projective::msm(&setup.setup_g1[..coeffs.len()], &coeffs).unwrap().into_affine()
 }
 
-pub fn evals_to_commitment(_evals: &[Scalar], domain: Radix2EvaluationDomain::<Scalar>, setup_g1: &SimulateSetupG1) -> G1Affine {
+pub fn evals_to_commitment(_evals: &[Scalar], domain: Radix2EvaluationDomain::<Scalar>, setup: &SimulateSetup) -> G1Affine {
     let mut evals = _evals.to_vec();
     domain.ifft_in_place(&mut evals);
-    coeffs_to_commitment(&evals, setup_g1)
+    coeffs_to_commitment(&evals, setup)
 }
 
 /// KZG commit for each row of raw_blob
-pub fn encoded_to_row_commitments(encoded: &EncodedBlobEncoded, setup_g1: &SimulateSetupG1) -> RowCommitments {
+pub fn encoded_to_row_commitments(encoded: &EncodedBlobEncoded, setup: &SimulateSetup) -> RowCommitments {
     // all rows use the same domain_blob_col_n
     let domain_blob_col_n = Radix2EvaluationDomain::<Scalar>::new(BLOB_COL_N).unwrap();
     // KZG commitment
     let row_commitments: Vec<_> = encoded
         .chunks(BLOB_COL_N)
-        .map(|row| evals_to_commitment(row, domain_blob_col_n, setup_g1))
+        .map(|row| evals_to_commitment(row, domain_blob_col_n, setup))
         .collect();
     RowCommitments(row_commitments)
 }
@@ -78,43 +80,81 @@ pub fn g1_to_scalar(g1: &G1Affine) -> Result<Scalar, SerializationError> {
     Ok(<Scalar as PrimeField>::from_le_bytes_mod_order(&compressed_bytes))
 }
 
-pub fn coeffs_to_multi_proof(coeffs: &Vec<Scalar>, setup_g1: &SimulateSetupG1) -> Vec<G1Affine> {
-    // f_i: coeffs[i], m = BLOB_ROW_N
+pub fn coeffs_to_proof_trivial(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> Vec<G1Affine> {
+    let num_coeffs = coeffs.len();
+    let domain_blob_row_n2 = Radix2EvaluationDomain::<Scalar>::new(num_coeffs).unwrap();
+    (0..num_coeffs)
+        .map(|i| {
+            let mut quotient_coeffs: Vec<Scalar> = vec![Scalar::zero(); num_coeffs];
+            let domain: Scalar = domain_blob_row_n2.element(i);
+            for t in (0..num_coeffs - 1).rev() {
+                quotient_coeffs[t] = coeffs[t + 1] + domain * quotient_coeffs[t + 1];
+                //dbg!(t);
+                //dbg!(quotient_coeffs[t]);
+            }
+            //assert_eq!(quotient_coeffs[num_coeffs - 2], coeffs[num_coeffs - 1]);
+            let proof_i = coeffs_to_commitment(&quotient_coeffs, setup);
+            //dbg!(i);
+            //assert_eq!(proof_0, h[i].into_affine());
+            proof_i
+        })
+        .collect::<Vec<G1Affine>>()
+}
+
+pub fn coeffs_to_proof_multiple(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> Vec<G1Affine> {
+    // f_i: coeffs[i], m = coeffs.len()
     // left vector: f_{m-1}, 0, ..., 0 (totally m-1 0's), f_{m-1}, f_0, f_1, ..., f_{m-2}
     // right vector: setup_g1[m-1], ..., setup_g1[0], 0, ..., 0 (totally m G1 0's)
     // ifft(fft(left vector) element-wise-product fft(right vector)), take the first m elements as h
     // result = fft(h)
-    let domain_blob_row_n = Radix2EvaluationDomain::<Scalar>::new(BLOB_ROW_N).unwrap();
-    let domain_blob_row_n2 = Radix2EvaluationDomain::<Scalar>::new(BLOB_ROW_N2).unwrap();
+    let num_coeffs = coeffs.len();
+    let domain_blob_row_n2 = Radix2EvaluationDomain::<Scalar>::new(num_coeffs).unwrap();
+    let domain_blob_row_n4 = Radix2EvaluationDomain::<Scalar>::new(num_coeffs << 1).unwrap();
 
-    let mut right: Vec<G1Projective> = setup_g1[..BLOB_ROW_N].iter().map(|x| x.clone().into_group()).collect();
+    let mut right: Vec<G1Projective> = setup.setup_g1[..num_coeffs].iter().map(|x| x.clone().into_group()).collect();
     right.reverse();
-    right.extend(vec![G1Projective::zero(); BLOB_ROW_N]);
-    domain_blob_row_n2.fft_in_place(&mut right);
+    right.extend(vec![G1Projective::zero(); num_coeffs]);
+    domain_blob_row_n4.fft_in_place(&mut right);
 
-    let mut left: Vec<Scalar> = vec![Scalar::zero(); BLOB_ROW_N + 1];
-    left[0] = coeffs[BLOB_ROW_N - 1].clone();
-    left[BLOB_ROW_N] = coeffs[BLOB_ROW_N - 1].clone();
-    left.extend(coeffs[..BLOB_ROW_N - 1].to_vec());
-    domain_blob_row_n2.fft_in_place(&mut left);
-    
+    let mut left: Vec<Scalar> = vec![Scalar::zero(); num_coeffs + 1];
+    left[0] = coeffs[num_coeffs - 1].clone();
+    left[num_coeffs] = coeffs[num_coeffs - 1].clone();
+    left.extend(coeffs[..num_coeffs - 1].to_vec());
+    domain_blob_row_n4.fft_in_place(&mut left);
+
     let mut h: Vec<G1Projective> = right.iter().zip(left.iter())
         .map(|(iright, ileft)| *iright * ileft)
         .collect();
-    domain_blob_row_n2.ifft_in_place(&mut h);
-    h.truncate(BLOB_ROW_N); // here h is h
-    domain_blob_row_n.fft_in_place(&mut h);
+    domain_blob_row_n4.ifft_in_place(&mut h);
+    h.truncate(num_coeffs); // here h is h
+
+    dbg!(num_coeffs);
+    for i in 0..num_coeffs {
+        dbg!(i);
+        let h_i: G1Projective = setup.setup_g1[..(num_coeffs - i)].iter().zip(coeffs[i..].iter()).map(|(ss, ff)| *ss * ff).sum();
+        assert_eq!(h_i.into_affine(), h[i].into_affine());
+    }
+    // h_i = s_0 * f_i + s_1 * f_{i+1} + ... + s_{m-1-i} * f_{m-1}, i = 0, ..., m-1
+    // c_w_k = h_0 + h_1 * w^k + ... + h_{m-1} * w^{(m-1)k}
+
+    let c_w_0: G1Projective = h.iter().sum();
+    let c_w_1: G1Projective = h.iter().zip(domain_blob_row_n2.elements()).map(|(hh, ww)| *hh * ww).sum();
+
+    domain_blob_row_n2.fft_in_place(&mut h);
+
+    assert_eq!(c_w_1.into_affine(), h[1].into_affine());
+    assert_eq!(c_w_0.into_affine(), h[0].into_affine());
+
     h.into_iter().map(|x| x.into_affine()).collect::<Vec<G1Affine>>()
 }
 
-pub fn encoded_to_KZG(encoded: EncodedBlobEncoded, setup_g1: &SimulateSetupG1) -> Result<EncodedBlobKZG, String> { //EncodedBlob {
-    // KZG
-    if setup_g1.len() < std::cmp::max(BLOB_COL_N, BLOB_ROW_N2) {
-        return Err(format!("The degree of setup_g1 {} is less than required {}", setup_g1.len(), std::cmp::max(BLOB_COL_N, BLOB_ROW_N2)));
+pub fn encoded_to_kzg(encoded: EncodedBlobEncoded, setup: &SimulateSetup) -> Result<EncodedBlobKZG, String> { //EncodedBlob {
+    if setup.setup_g1.len() < std::cmp::max(BLOB_COL_N, BLOB_ROW_N2) {
+        return Err(format!("The degree of setup_g1 {} is less than required {}", setup.setup_g1.len(), std::cmp::max(BLOB_COL_N, BLOB_ROW_N2)));
     }
     // commit for each row of encoded
-    let row_commitments = encoded_to_row_commitments(&encoded, setup_g1);
-    // commit for row_commitments
+    let row_commitments = encoded_to_row_commitments(&encoded, setup);
+    // commit for row_commitments & obtain proofs
     let mut row_commitments_scalars = row_commitments
         .iter()
         .map(|g1| g1_to_scalar(g1))
@@ -122,21 +162,45 @@ pub fn encoded_to_KZG(encoded: EncodedBlobEncoded, setup_g1: &SimulateSetupG1) -
         .map_err(|err| format!("SerializationError in g1_to_scalar(), err = {}", err))?;
     let domain_blob_row_n2 = Radix2EvaluationDomain::<Scalar>::new(BLOB_ROW_N2).unwrap();
     domain_blob_row_n2.ifft_in_place(&mut row_commitments_scalars);
-    let da_commitment = coeffs_to_commitment(&row_commitments_scalars, setup_g1);
-    let da_proofs = coeffs_to_multi_proof(&row_commitments_scalars, setup_g1);
+    let da_commitment = coeffs_to_commitment(&row_commitments_scalars, setup);
+    let da_proofs_trivial = coeffs_to_proof_trivial(&row_commitments_scalars, setup);
+    let da_proofs = coeffs_to_proof_multiple(&row_commitments_scalars, setup);
+    dbg!(da_commitment);
+    dbg!(&da_proofs_trivial);
+    dbg!(&da_proofs);
+
     Ok(EncodedBlobKZG {
         encoded,
         row_commitments,
         da_commitment,
-        da_proofs
+        da_proofs: da_proofs_trivial
     })
-    //raw_blob
+}
+
+// Return true: proof is correct; false: not.
+pub fn verify_kzg(
+    row_commitment_scalar: Scalar, 
+    da_commitment: G1Affine, 
+    da_proof: G1Affine, 
+    domain: Scalar, 
+    setup: &SimulateSetup
+) -> bool {
+    let h: G2Projective = setup.setup_g2[0].into_group();
+    let zs2: G2Projective = setup.setup_g2[1].into_group() - setup.setup_g2[0] * domain;
+    let is1: G1Projective = setup.setup_g1[0] * row_commitment_scalar;
+    // assert_eq!(setup.setup_g1[0], G1Affine::generator());
+    // assert_eq!(setup.setup_g2[0], G2Affine::generator());
+    // e(da_proof, zs2) = e(da_commitment - is1, h)
+    let e_proof: PairingOutput<Bn254> = Pairing::pairing(da_proof, zs2);
+    let e_commitment: PairingOutput<Bn254> = Pairing::pairing(da_commitment.into_group() - is1, h);
+    e_proof == e_commitment
 }
 
 #[cfg(test)]
 mod tests {
     use crate::*;
     use std::time::Instant;
+    use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
     use rand::{rngs::StdRng, Rng, SeedableRng};
     use test_case::test_case;
     use ark_bn254::{Fr as Scalar, G1Affine};
@@ -182,12 +246,25 @@ mod tests {
         println!("Time taken for RS_encode: {:?}ms with raw_data {} bytes", duration, raw_data.len());
 
         // KZG
-        let setup_g1 = SimulateSetupG1::sim_load();
+        let setup = SimulateSetup::sim_load();
         let start = Instant::now();
-        let encoded_blob_KZG = encoded_to_KZG(encoded, &setup_g1).unwrap();
+        let encoded_blob_kzg = encoded_to_kzg(encoded, &setup).unwrap();
         let duration = start.elapsed().as_millis();
         println!("Time taken for encoded_to_KZG: {:?}ms with raw_data {} bytes", duration, raw_data.len());
         
+        // verify KZG
+        let domain_blob_row_n2 = Radix2EvaluationDomain::<Scalar>::new(BLOB_ROW_N2).unwrap();
+        for i in 0..BLOB_ROW_N2 {
+            let row_commitment = encoded_blob_kzg.row_commitments[i];
+            let domain: Scalar = domain_blob_row_n2.elements().nth(i).unwrap();
+            let verify_row_i = verify_kzg(
+                g1_to_scalar(&row_commitment).unwrap(), 
+                encoded_blob_kzg.da_commitment, 
+                encoded_blob_kzg.da_proofs[i], 
+                domain, 
+                &setup);
+            assert!(verify_row_i);
+        }
         // Merkle
         Ok(())
     }

@@ -1,15 +1,15 @@
 use std::{convert::identity, ops::{Deref, DerefMut}};
 
 use ark_ec::{AffineRepr, CurveGroup};
-use ark_ff::{PrimeField, UniformRand, One};
+use ark_ff::{Field, One, PrimeField, UniformRand};
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use ethereum_types::H256;
-use ark_bn254::{Fr as Scalar, G1Affine, G1Projective};
+use ark_bn254::{Fr as Scalar, G1Affine, G1Projective, G2Affine};
 
 pub const RAW_UNIT: usize = 31;
 pub const BLOB_UNIT: usize = 32;
-pub const BLOB_ROW_LOG: usize = 10;
-pub const BLOB_COL_LOG: usize = 11; // TODO
+pub const BLOB_ROW_LOG: usize = 1;
+pub const BLOB_COL_LOG: usize = 1; // TODO
 pub const BLOB_ROW_N: usize = 1 << BLOB_ROW_LOG;
 pub const BLOB_ROW_N2: usize = BLOB_ROW_N << 1;
 pub const BLOB_COL_N: usize = 1 << BLOB_COL_LOG;
@@ -109,30 +109,42 @@ impl DerefMut for RowCommitments {
 //     }
 // }
 
-pub struct SimulateSetupG1(Vec<G1Affine>); // >= num_cols for each row's commitment
-impl Deref for SimulateSetupG1 {
-    type Target = Vec<G1Affine>;
+#[derive(Clone)]
+pub struct SimulateSetup {
+    pub setup_g1: Vec<G1Affine>,
+    pub setup_g2: Vec<G2Affine>
+} // >= num_cols for each row's commitment
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-pub const KZG_SETUP_N: usize = 1 << 11;
-impl SimulateSetupG1 {
+pub const KZG_SETUP_N: usize = BLOB_ROW_N2; // std::cmp::max(BLOB_ROW_N2, BLOB_COL_N);
+pub const KZG_SETUP_N_G2: usize = 1 << 1;
+impl SimulateSetup {
     pub fn sim_load() -> Self {
         use ark_std::rand::thread_rng;
         let mut rng = thread_rng();
         let s: Scalar = Scalar::rand(&mut rng);
-        let all_s = [s; KZG_SETUP_N];
-        let setup_g1: Vec<G1Affine> = all_s
+        //let s = <Scalar as Field>::from_random_bytes(&(3usize.to_le_bytes())).unwrap(); // 
+        let mut all_s: Vec<Scalar> = vec![s; KZG_SETUP_N];
+        all_s[0] = Scalar::one();
+        all_s = all_s
             .iter()
             .scan(Scalar::one(), |state, &x| {
                 *state *= x;
                 Some(*state)
             })
-            .map(|x: Scalar| (G1Affine::generator() * x).into_affine())
             .collect();
-        Self(setup_g1)
+        //println!("{:?}", all_s); //
+        let setup_g1: Vec<G1Affine> = all_s
+            .iter()
+            .map(|x| (G1Affine::generator() * x).into_affine())
+            .collect();
+        let setup_g2: Vec<G2Affine> = all_s[..KZG_SETUP_N_G2]
+            .iter()
+            .map(|x| (G2Affine::generator() * x).into_affine())
+            .collect();
+        Self {
+            setup_g1,
+            setup_g2
+        }
     }
 }
 
