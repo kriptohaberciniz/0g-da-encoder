@@ -7,7 +7,7 @@ use ark_bn254::{Bn254, Fr as Scalar, G1Affine, G1Projective, G2Projective};
 use ark_ff::{fields::Field, BigInteger, MontConfig, PrimeField};
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use ark_serialize::{CanonicalSerialize, SerializationError};
-use binary_merkle_tree::merkle_root;
+use binary_merkle_tree::{merkle_proof, merkle_root, verify_proof};
 use ethereum_types::H256;
 use sp_runtime::traits::Keccak256;
 //use once_cell::sync::Lazy;
@@ -210,11 +210,11 @@ pub fn scalar_to_h256(scalar: Scalar) -> Result<H256, String> {
     Ok(H256::from_slice(&bytes))
 }
 
-pub fn encoded_blob_scalars_to_h256s(encoded: &EncodedBlobScalars) -> Result<EncodedBlobH256s, String> {
+pub fn encoded_blob_scalars_to_h256s(encoded: &Vec<Scalar>) -> Result<Vec<H256>, String> {
     let encoded_h256s: Vec<H256> = encoded.iter()
         .map(|x| scalar_to_h256(*x))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(EncodedBlobH256s(encoded_h256s))
+    Ok(encoded_h256s)
 }
 
 pub fn encoded_h256s_to_merkle(encoded: EncodedBlobH256s) -> EncodedBlobMerkle {
@@ -228,6 +228,103 @@ pub fn encoded_h256s_to_merkle(encoded: EncodedBlobH256s) -> EncodedBlobMerkle {
         row_merkle_roots,
         data_root
     }
+}
+
+pub fn data_to_encoded_blob(data: &[u8], setup: &SimulateSetup) -> Result<EncodedBlob, String> {
+    // zero-padding original data to raw_data
+    let raw_data: RawData = RawData::try_from(data)?;
+    // raw_data_to_raw_blob
+    let raw_blob = raw_data_to_raw_blob(&raw_data);
+    // encode
+    let encoded: EncodedBlobScalars = raw_blob_to_encoded(&raw_blob);
+    // KZG
+    let encoded_blob_kzg = encoded_to_kzg(encoded, &setup).unwrap();
+    // prepare H256 for Merkle
+    let encoded_h256 = EncodedBlobH256s(encoded_blob_scalars_to_h256s(&encoded_blob_kzg.encoded).unwrap());
+    // Merkle
+    let encoded_blob_merkle: EncodedBlobMerkle = encoded_h256s_to_merkle(encoded_h256);
+    // integrate blob
+    Ok(EncodedBlob {kzg: encoded_blob_kzg, merkle: encoded_blob_merkle})
+}
+
+pub fn encoded_blob_to_slice(encoded_blob: &EncodedBlob, index: usize) -> Result<EncodedSlice, String> {
+    if index >= BLOB_ROW_N2 { // || index < 0 {
+        return Err(format!("Request with overflow index {}, while index must < {}", index, BLOB_ROW_N2));
+    }
+    let start_index_2d: usize = index << BLOB_COL_LOG;
+    let end_index_2d: usize = start_index_2d + BLOB_COL_N;
+    let kzg_slice = EncodedSliceKZG {
+        encoded: encoded_blob.kzg.encoded[start_index_2d..end_index_2d].to_vec(),
+        row_commitment: encoded_blob.kzg.row_commitments[index],
+        da_commitment: encoded_blob.kzg.da_commitment,
+        da_proof: encoded_blob.kzg.da_proofs[index]
+    };
+    let merkle_slice = EncodedSliceMerkle {
+        encoded: encoded_blob.merkle.encoded[start_index_2d..end_index_2d].to_vec(),
+        merkle_proof: merkle_proof::<Keccak256, _, _>(encoded_blob.merkle.row_merkle_roots.clone(), index)
+    };
+    Ok(EncodedSlice {
+        index,
+        kzg: kzg_slice,
+        merkle: merkle_slice
+    })
+}
+
+pub fn verify_slice(encoded_slice: &EncodedSlice, setup: &SimulateSetup) -> bool {
+    // verify index
+    if encoded_slice.index >= BLOB_ROW_N2 || encoded_slice.index != encoded_slice.merkle.merkle_proof.leaf_index { // || index < 0 {
+        return false
+    }
+    // verify length
+    if encoded_slice.merkle.merkle_proof.number_of_leaves != BLOB_ROW_N2 {
+        return false
+    }
+    // verify scalars_to_h256s
+    let encoded_h256_try = encoded_blob_scalars_to_h256s(&encoded_slice.kzg.encoded);
+    let encoded_h256 = match encoded_h256_try {
+        Ok(data) => data,
+        Err(_) => return false
+    };
+    if encoded_h256 != encoded_slice.merkle.encoded {
+        return false
+    }
+    // verify KZG local
+    let domain_blob_col_n = Radix2EvaluationDomain::<Scalar>::new(BLOB_COL_N).unwrap();
+    let kzg_local = evals_to_commitment(&encoded_slice.kzg.encoded, domain_blob_col_n, setup);
+    if kzg_local != encoded_slice.kzg.row_commitment {
+        return false
+    }
+    // verify KZG global
+    let row_commitment_scalar_try = g1_to_scalar(&encoded_slice.kzg.row_commitment);
+    let row_commitment_scalar = match row_commitment_scalar_try {
+        Ok(data) => data,
+        Err(_) => return false
+    };
+    let domain_blob_row_n2 = Radix2EvaluationDomain::<Scalar>::new(BLOB_ROW_N2).unwrap();
+    let domain: Scalar = domain_blob_row_n2.elements().nth(encoded_slice.index).unwrap();
+    let verify_kzg_global = verify_kzg(
+        row_commitment_scalar, 
+        encoded_slice.kzg.da_commitment, 
+        encoded_slice.kzg.da_proof, 
+        domain, 
+        setup
+    );
+    if !verify_kzg_global {
+        return false
+    }
+    // verify Merkle local
+    let row_merkle_root = merkle_root::<Keccak256, _>(encoded_slice.merkle.encoded.clone());
+    if row_merkle_root != encoded_slice.merkle.merkle_proof.leaf {
+        return false
+    }
+    // verify Merkle global
+    verify_proof::<Keccak256, _, _>(
+        &encoded_slice.merkle.merkle_proof.root, 
+        encoded_slice.merkle.merkle_proof.proof.clone(), 
+        encoded_slice.merkle.merkle_proof.number_of_leaves, 
+        encoded_slice.merkle.merkle_proof.leaf_index, 
+        &encoded_slice.merkle.merkle_proof.leaf
+    )
 }
 
 #[cfg(test)]
@@ -269,7 +366,7 @@ mod tests {
     #[test_case(12345565 => Ok(()); "normal sized data")]
     #[test_case(RAW_UNIT * BLOB_ROW_N * BLOB_COL_N => Ok(()); "exact sized data")]
     #[test_case(RAW_UNIT * BLOB_ROW_N * BLOB_COL_N + 1 => Err(format!("Input byte slice length {} exceeds the required length {} for RawData.", RAW_UNIT * BLOB_ROW_N * BLOB_COL_N + 1, RAW_UNIT * BLOB_ROW_N * BLOB_COL_N)); "overflow sized data")]
-    fn test_batcher(num_bytes: usize) -> Result<(), String> {
+    fn test_batcher_encode_step_by_step(num_bytes: usize) -> Result<(), String> {
         // generate random original data with {num_bytes} bytes
         let seed = 22u64;
         let mut rng = StdRng::seed_from_u64(seed);
@@ -314,7 +411,7 @@ mod tests {
 
         // prepare H256 for Merkle
         let start = Instant::now();
-        let encoded_h256: EncodedBlobH256s = encoded_blob_scalars_to_h256s(&encoded_blob_kzg.encoded).unwrap();
+        let encoded_h256 = EncodedBlobH256s(encoded_blob_scalars_to_h256s(&encoded_blob_kzg.encoded).unwrap());
         let duration = start.elapsed().as_millis();
         println!("Time taken for encoded_blob_scalars_to_h256s: {:?}ms with original {} bytes and raw_data {} bytes", duration, num_bytes, raw_data.len());
 
@@ -328,12 +425,59 @@ mod tests {
         let start = Instant::now();
         for i in 0..BLOB_ROW_N2 {
             let proof_i = merkle_proof::<Keccak256, _, _>(encoded_blob_merkle.row_merkle_roots.clone(), i);
-            //let verify_i = verify_proof::<Keccak256, _, _>(&proof_i.root, proof_i.proof.clone(), BLOB_ROW_N2, proof_i.leaf_index, &proof_i.leaf);
-            let verify_i = verify_proof::<Keccak256, _, _>(&encoded_blob_merkle.data_root, proof_i.proof.clone(), BLOB_ROW_N2, i, &encoded_blob_merkle.row_merkle_roots[i]);
+            let verify_i = verify_proof::<Keccak256, _, _>(&proof_i.root, proof_i.proof.clone(), proof_i.number_of_leaves, proof_i.leaf_index, &proof_i.leaf);
+            //let verify_i = verify_proof::<Keccak256, _, _>(&encoded_blob_merkle.data_root, proof_i.proof.clone(), BLOB_ROW_N2, i, &encoded_blob_merkle.row_merkle_roots[i]);
             assert!(verify_i);
         }
         let duration = start.elapsed().as_millis();
         println!("Time taken for prove and verify merkle: {:?}ms with original {} bytes and raw_data {} bytes", duration, num_bytes, raw_data.len());
+        
+        let encoded_blob = EncodedBlob {kzg: encoded_blob_kzg, merkle: encoded_blob_merkle};
         Ok(())
+    }
+
+    #[test_case(0 => Ok(()); "pipeline: zero sized data")]
+    #[test_case(1 => Ok(()); "pipeline: one sized data")]
+    #[test_case(12345565 => Ok(()); "pipeline: normal sized data")]
+    #[test_case(RAW_UNIT * BLOB_ROW_N * BLOB_COL_N => Ok(()); "pipeline: exact sized data")]
+    #[test_case(RAW_UNIT * BLOB_ROW_N * BLOB_COL_N + 1 => Err(format!("Input byte slice length {} exceeds the required length {} for RawData.", RAW_UNIT * BLOB_ROW_N * BLOB_COL_N + 1, RAW_UNIT * BLOB_ROW_N * BLOB_COL_N)); "pipeline: overflow sized data")]
+    pub fn test_batcher_encode(num_bytes: usize) -> Result<(), String> {
+        // generate random original data with {num_bytes} bytes
+        let seed = 22u64;
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut data = vec![0u8; num_bytes];
+        rng.fill(&mut data[..]);
+
+        let setup = SimulateSetup::sim_load();
+        let encoded_blob = data_to_encoded_blob(data.as_slice(), &setup)?;
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_batcher_slice_and_verify() {
+        let seed = 22u64;
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut data = vec![0u8; RAW_UNIT * BLOB_ROW_N * BLOB_COL_N];
+        rng.fill(&mut data[..]);
+
+        let setup = SimulateSetup::sim_load();
+        let encoded_blob = data_to_encoded_blob(data.as_slice(), &setup).unwrap();
+
+        let mut encoded_slice_0 = encoded_blob_to_slice(&encoded_blob, 0).unwrap();
+        assert!(verify_slice(&encoded_slice_0, &setup));
+        encoded_slice_0.index = 1;
+        assert!(!verify_slice(&encoded_slice_0, &setup));
+        encoded_slice_0.index = BLOB_ROW_N2;
+        assert!(!verify_slice(&encoded_slice_0, &setup));
+        let mut encoded_slice_max = encoded_blob_to_slice(&encoded_blob, BLOB_ROW_N2 - 1).unwrap();
+        assert!(verify_slice(&encoded_slice_max, &setup));
+        encoded_slice_max.merkle.merkle_proof.leaf_index = 1;
+        assert!(!verify_slice(&encoded_slice_max, &setup));
+        encoded_blob_to_slice(&encoded_blob, BLOB_ROW_N2).expect_err("Expected error for overflow row index");
+        
+        for index in 0..BLOB_ROW_N2 {
+            assert!(verify_slice(&encoded_blob_to_slice(&encoded_blob, index).unwrap(), &setup));
+        }
     }
 }
