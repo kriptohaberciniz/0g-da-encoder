@@ -1,15 +1,13 @@
-use std::{convert::identity, ops::{Deref, DerefMut}};
+use std::ops::{Deref, DerefMut};
 
 use ark_ec::{AffineRepr, CurveGroup};
-use ark_ff::{Field, One, PrimeField, UniformRand};
-use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
-use ethereum_types::H256;
-use ark_bn254::{Fr as Scalar, G1Affine, G1Projective, G2Affine};
+use ark_ff::{One, UniformRand};
+use ark_bn254::{Fr as Scalar, G1Affine, G2Affine};
 
 pub const RAW_UNIT: usize = 31;
 pub const BLOB_UNIT: usize = 32;
-pub const BLOB_ROW_LOG: usize = 1;
-pub const BLOB_COL_LOG: usize = 1; // TODO
+pub const BLOB_ROW_LOG: usize = 10;
+pub const BLOB_COL_LOG: usize = 10;
 pub const BLOB_ROW_N: usize = 1 << BLOB_ROW_LOG;
 pub const BLOB_ROW_N2: usize = BLOB_ROW_N << 1;
 pub const BLOB_COL_N: usize = 1 << BLOB_COL_LOG;
@@ -115,7 +113,7 @@ pub struct SimulateSetup {
     pub setup_g2: Vec<G2Affine>
 } // >= num_cols for each row's commitment
 
-pub const KZG_SETUP_N: usize = BLOB_ROW_N2; // std::cmp::max(BLOB_ROW_N2, BLOB_COL_N);
+//pub const KZG_SETUP_N: usize = BLOB_ROW_N2; // std::cmp::max(BLOB_ROW_N2, BLOB_COL_N);
 pub const KZG_SETUP_N_G2: usize = 1 << 1;
 impl SimulateSetup {
     pub fn sim_load() -> Self {
@@ -123,7 +121,7 @@ impl SimulateSetup {
         let mut rng = thread_rng();
         let s: Scalar = Scalar::rand(&mut rng);
         //let s = <Scalar as Field>::from_random_bytes(&(3usize.to_le_bytes())).unwrap(); // 
-        let mut all_s: Vec<Scalar> = vec![s; KZG_SETUP_N];
+        let mut all_s: Vec<Scalar> = vec![s; std::cmp::max(BLOB_ROW_N2, BLOB_COL_N)];
         all_s[0] = Scalar::one();
         all_s = all_s
             .iter()

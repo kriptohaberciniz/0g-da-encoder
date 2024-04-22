@@ -1,14 +1,12 @@
-use std::sync::mpsc::SendError;
+use std::collections::VecDeque;
 
 use crate::types::*;
-use ark_ec::{bn::Bn, pairing::{MillerLoopOutput, Pairing, PairingOutput}, AffineRepr, CurveGroup, VariableBaseMSM};
+use ark_ec::{pairing::{Pairing, PairingOutput}, AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_std::{iterable::Iterable, Zero};
-use ethereum_types::H256;
-use ark_bn254::{Bn254, Fr as Scalar, G1Affine, G1Projective, G2Affine, G2Projective};
+use ark_bn254::{Bn254, Fr as Scalar, G1Affine, G1Projective, G2Projective};
 use ark_ff::{fields::Field, MontConfig, PrimeField};
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use ark_serialize::{CanonicalSerialize, SerializationError};
-use ark_poly::polynomial::univariate::DensePolynomial;
 //use once_cell::sync::Lazy;
 // use transpose::transpose;
 
@@ -102,6 +100,11 @@ pub fn coeffs_to_proof_trivial(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> V
 }
 
 pub fn coeffs_to_proof_multiple(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> Vec<G1Affine> {
+    let mut coeffs: VecDeque<Scalar> = coeffs.clone().into();
+    coeffs.pop_front();
+    coeffs.push_back(Scalar::zero());
+    let coeffs: Vec<Scalar> = coeffs.into();
+
     // f_i: coeffs[i], m = coeffs.len()
     // left vector: f_{m-1}, 0, ..., 0 (totally m-1 0's), f_{m-1}, f_0, f_1, ..., f_{m-2}
     // right vector: setup_g1[m-1], ..., setup_g1[0], 0, ..., 0 (totally m G1 0's)
@@ -128,22 +131,22 @@ pub fn coeffs_to_proof_multiple(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> 
     domain_blob_row_n4.ifft_in_place(&mut h);
     h.truncate(num_coeffs); // here h is h
 
-    dbg!(num_coeffs);
-    for i in 0..num_coeffs {
-        dbg!(i);
-        let h_i: G1Projective = setup.setup_g1[..(num_coeffs - i)].iter().zip(coeffs[i..].iter()).map(|(ss, ff)| *ss * ff).sum();
-        assert_eq!(h_i.into_affine(), h[i].into_affine());
-    }
-    // h_i = s_0 * f_i + s_1 * f_{i+1} + ... + s_{m-1-i} * f_{m-1}, i = 0, ..., m-1
-    // c_w_k = h_0 + h_1 * w^k + ... + h_{m-1} * w^{(m-1)k}
+    // dbg!(num_coeffs);
+    // for i in 0..num_coeffs {
+    //     dbg!(i);
+    //     let h_i: G1Projective = setup.setup_g1[..(num_coeffs - i)].iter().zip(coeffs[i..].iter()).map(|(ss, ff)| *ss * ff).sum();
+    //     assert_eq!(h_i.into_affine(), h[i].into_affine());
+    // }
+    // // h_i = s_0 * f_i + s_1 * f_{i+1} + ... + s_{m-1-i} * f_{m-1}, i = 0, ..., m-1
+    // // c_w_k = h_0 + h_1 * w^k + ... + h_{m-1} * w^{(m-1)k}
 
-    let c_w_0: G1Projective = h.iter().sum();
-    let c_w_1: G1Projective = h.iter().zip(domain_blob_row_n2.elements()).map(|(hh, ww)| *hh * ww).sum();
+    // let c_w_0: G1Projective = h.iter().sum();
+    // let c_w_1: G1Projective = h.iter().zip(domain_blob_row_n2.elements()).map(|(hh, ww)| *hh * ww).sum();
 
     domain_blob_row_n2.fft_in_place(&mut h);
 
-    assert_eq!(c_w_1.into_affine(), h[1].into_affine());
-    assert_eq!(c_w_0.into_affine(), h[0].into_affine());
+    // assert_eq!(c_w_1.into_affine(), h[1].into_affine());
+    // assert_eq!(c_w_0.into_affine(), h[0].into_affine());
 
     h.into_iter().map(|x| x.into_affine()).collect::<Vec<G1Affine>>()
 }
@@ -163,17 +166,17 @@ pub fn encoded_to_kzg(encoded: EncodedBlobEncoded, setup: &SimulateSetup) -> Res
     let domain_blob_row_n2 = Radix2EvaluationDomain::<Scalar>::new(BLOB_ROW_N2).unwrap();
     domain_blob_row_n2.ifft_in_place(&mut row_commitments_scalars);
     let da_commitment = coeffs_to_commitment(&row_commitments_scalars, setup);
-    let da_proofs_trivial = coeffs_to_proof_trivial(&row_commitments_scalars, setup);
+    //let da_proofs_trivial = coeffs_to_proof_trivial(&row_commitments_scalars, setup);
     let da_proofs = coeffs_to_proof_multiple(&row_commitments_scalars, setup);
-    dbg!(da_commitment);
-    dbg!(&da_proofs_trivial);
-    dbg!(&da_proofs);
+    //dbg!(da_commitment);
+    //dbg!(&da_proofs_trivial);
+    //dbg!(&da_proofs);
 
     Ok(EncodedBlobKZG {
         encoded,
         row_commitments,
         da_commitment,
-        da_proofs: da_proofs_trivial
+        da_proofs//: da_proofs_trivial
     })
 }
 
@@ -217,13 +220,14 @@ mod tests {
         let mut rng = thread_rng();
         let g1 = G1Affine::rand(&mut rng);
         let scalar = g1_to_scalar(&g1);
+        println!("{:?}", scalar);
     }
     #[test_case(0 => Ok(()); "zero sized data")]
     #[test_case(1 => Ok(()); "one sized data")]
     #[test_case(12345565 => Ok(()); "normal sized data")]
     #[test_case(RAW_UNIT * BLOB_ROW_N * BLOB_COL_N => Ok(()); "exact sized data")]
     #[test_case(RAW_UNIT * BLOB_ROW_N * BLOB_COL_N + 1 => Err(format!("Input byte slice length {} exceeds the required length {} for RawData.", RAW_UNIT * BLOB_ROW_N * BLOB_COL_N + 1, RAW_UNIT * BLOB_ROW_N * BLOB_COL_N)); "overflow sized data")]
-    fn benchmark_batcher(num_bytes: usize) -> Result<(), String> {
+    fn test_batcher(num_bytes: usize) -> Result<(), String> {
         // generate random original data with {num_bytes} bytes
         let seed = 22u64;
         let mut rng = StdRng::seed_from_u64(seed);
