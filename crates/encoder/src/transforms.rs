@@ -4,9 +4,12 @@ use crate::types::*;
 use ark_ec::{pairing::{Pairing, PairingOutput}, AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_std::{iterable::Iterable, Zero};
 use ark_bn254::{Bn254, Fr as Scalar, G1Affine, G1Projective, G2Projective};
-use ark_ff::{fields::Field, MontConfig, PrimeField};
+use ark_ff::{fields::Field, BigInteger, MontConfig, PrimeField};
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use ark_serialize::{CanonicalSerialize, SerializationError};
+use binary_merkle_tree::merkle_root;
+use ethereum_types::H256;
+use sp_runtime::traits::Keccak256;
 //use once_cell::sync::Lazy;
 // use transpose::transpose;
 
@@ -34,7 +37,7 @@ pub fn rs_encode_blobn_cols(matrix: &mut Vec<Vec<Scalar>>) -> () {
 }
 
 /// RS encode for each col of raw_blob
-pub fn raw_blob_to_encoded(raw_blob: &RawBlob) -> EncodedBlobEncoded {
+pub fn raw_blob_to_encoded(raw_blob: &RawBlob) -> EncodedBlobScalars {
     // transpose raw_blob
     let mut raw_blob_transpose: Vec<Vec<Scalar>> = (0..BLOB_COL_N)
         .map(|col_index| (0..BLOB_ROW_N).map(|row_index| raw_blob[(row_index << BLOB_COL_LOG) + col_index].clone()).collect::<Vec<Scalar>>())
@@ -45,7 +48,7 @@ pub fn raw_blob_to_encoded(raw_blob: &RawBlob) -> EncodedBlobEncoded {
     let encoded_flatten: Vec<Scalar> = (0..BLOB_ROW_N << 1)
         .flat_map(|row_index| raw_blob_transpose.iter().map(|col| col[row_index].clone()).collect::<Vec<Scalar>>())
         .collect();
-    EncodedBlobEncoded(encoded_flatten)
+    EncodedBlobScalars(encoded_flatten)
 }
 
 pub fn coeffs_to_commitment(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> G1Affine {
@@ -61,7 +64,7 @@ pub fn evals_to_commitment(_evals: &[Scalar], domain: Radix2EvaluationDomain::<S
 }
 
 /// KZG commit for each row of raw_blob
-pub fn encoded_to_row_commitments(encoded: &EncodedBlobEncoded, setup: &SimulateSetup) -> RowCommitments {
+pub fn encoded_to_row_commitments(encoded: &EncodedBlobScalars, setup: &SimulateSetup) -> RowCommitments {
     // all rows use the same domain_blob_col_n
     let domain_blob_col_n = Radix2EvaluationDomain::<Scalar>::new(BLOB_COL_N).unwrap();
     // KZG commitment
@@ -151,7 +154,7 @@ pub fn coeffs_to_proof_multiple(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> 
     h.into_iter().map(|x| x.into_affine()).collect::<Vec<G1Affine>>()
 }
 
-pub fn encoded_to_kzg(encoded: EncodedBlobEncoded, setup: &SimulateSetup) -> Result<EncodedBlobKZG, String> { //EncodedBlob {
+pub fn encoded_to_kzg(encoded: EncodedBlobScalars, setup: &SimulateSetup) -> Result<EncodedBlobKZG, String> { //EncodedBlob {
     if setup.setup_g1.len() < std::cmp::max(BLOB_COL_N, BLOB_ROW_N2) {
         return Err(format!("The degree of setup_g1 {} is less than required {}", setup.setup_g1.len(), std::cmp::max(BLOB_COL_N, BLOB_ROW_N2)));
     }
@@ -199,12 +202,42 @@ pub fn verify_kzg(
     e_proof == e_commitment
 }
 
+pub fn scalar_to_h256(scalar: Scalar) -> Result<H256, String> {
+    let bytes: Vec<u8> = MontConfig::into_bigint(scalar).to_bytes_le();
+    if bytes.len() != 32 {
+        return Err(format!("The number of bytes representing Scalar {} is not 32 but {}", scalar, bytes.len()));
+    }
+    Ok(H256::from_slice(&bytes))
+}
+
+pub fn encoded_blob_scalars_to_h256s(encoded: &EncodedBlobScalars) -> Result<EncodedBlobH256s, String> {
+    let encoded_h256s: Vec<H256> = encoded.iter()
+        .map(|x| scalar_to_h256(*x))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(EncodedBlobH256s(encoded_h256s))
+}
+
+pub fn encoded_h256s_to_merkle(encoded: EncodedBlobH256s) -> EncodedBlobMerkle {
+    let row_merkle_roots: Vec<H256> = encoded
+        .chunks(BLOB_COL_N)
+        .map(|row| merkle_root::<Keccak256, _>(row))
+        .collect();
+    let data_root = merkle_root::<Keccak256, _>(row_merkle_roots.clone());
+    EncodedBlobMerkle {
+        encoded,
+        row_merkle_roots,
+        data_root
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::*;
     use std::time::Instant;
     use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
+    use binary_merkle_tree::{merkle_proof, verify_proof};
     use rand::{rngs::StdRng, Rng, SeedableRng};
+    use sp_runtime::traits::Keccak256;
     use test_case::test_case;
     use ark_bn254::{Fr as Scalar, G1Affine};
     use ark_ff::{Field, MontConfig, UniformRand};
@@ -214,6 +247,15 @@ mod tests {
         let chunk = [0u8; 31];
         let scalar = <Scalar as Field>::from_random_bytes(&chunk).unwrap();
         dbg!(MontConfig::into_bigint(scalar));
+    }
+    #[test]
+    fn test_scalar_to_h256() {
+        use ark_std::One;
+        let one = Scalar::one();
+        let one_h256 = scalar_to_h256(one).unwrap();
+        let mut one_gt = [0u8; 32];
+        one_gt[0] = 1;
+        assert_eq!(one_h256.as_bytes(), one_gt);
     }
     #[test]
     fn test_g1_to_scalar() {
@@ -245,16 +287,16 @@ mod tests {
         
         // encode
         let start = Instant::now();
-        let encoded: EncodedBlobEncoded = raw_blob_to_encoded(&raw_blob);
+        let encoded: EncodedBlobScalars = raw_blob_to_encoded(&raw_blob);
         let duration = start.elapsed().as_millis();
-        println!("Time taken for RS_encode: {:?}ms with raw_data {} bytes", duration, raw_data.len());
+        println!("Time taken for RS_encode: {:?}ms with original {} bytes and raw_data {} bytes", duration, num_bytes, raw_data.len());
 
         // KZG
         let setup = SimulateSetup::sim_load();
         let start = Instant::now();
         let encoded_blob_kzg = encoded_to_kzg(encoded, &setup).unwrap();
         let duration = start.elapsed().as_millis();
-        println!("Time taken for encoded_to_KZG: {:?}ms with raw_data {} bytes", duration, raw_data.len());
+        println!("Time taken for encoded_to_KZG: {:?}ms with original {} bytes and raw_data {} bytes", duration, num_bytes, raw_data.len());
         
         // verify KZG
         let domain_blob_row_n2 = Radix2EvaluationDomain::<Scalar>::new(BLOB_ROW_N2).unwrap();
@@ -269,7 +311,29 @@ mod tests {
                 &setup);
             assert!(verify_row_i);
         }
+
+        // prepare H256 for Merkle
+        let start = Instant::now();
+        let encoded_h256: EncodedBlobH256s = encoded_blob_scalars_to_h256s(&encoded_blob_kzg.encoded).unwrap();
+        let duration = start.elapsed().as_millis();
+        println!("Time taken for encoded_blob_scalars_to_h256s: {:?}ms with original {} bytes and raw_data {} bytes", duration, num_bytes, raw_data.len());
+
         // Merkle
+        let start = Instant::now();
+        let encoded_blob_merkle: EncodedBlobMerkle = encoded_h256s_to_merkle(encoded_h256);
+        let duration = start.elapsed().as_millis();
+        println!("Time taken for encoded_h256s_to_merkle: {:?}ms with original {} bytes and raw_data {} bytes", duration, num_bytes, raw_data.len());
+
+        // verify Merkle
+        let start = Instant::now();
+        for i in 0..BLOB_ROW_N2 {
+            let proof_i = merkle_proof::<Keccak256, _, _>(encoded_blob_merkle.row_merkle_roots.clone(), i);
+            //let verify_i = verify_proof::<Keccak256, _, _>(&proof_i.root, proof_i.proof.clone(), BLOB_ROW_N2, proof_i.leaf_index, &proof_i.leaf);
+            let verify_i = verify_proof::<Keccak256, _, _>(&encoded_blob_merkle.data_root, proof_i.proof.clone(), BLOB_ROW_N2, i, &encoded_blob_merkle.row_merkle_roots[i]);
+            assert!(verify_i);
+        }
+        let duration = start.elapsed().as_millis();
+        println!("Time taken for prove and verify merkle: {:?}ms with original {} bytes and raw_data {} bytes", duration, num_bytes, raw_data.len());
         Ok(())
     }
 }
