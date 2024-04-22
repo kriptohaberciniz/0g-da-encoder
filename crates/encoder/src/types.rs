@@ -1,3 +1,4 @@
+use ethereum_types::H256;
 use std::ops::{Deref, DerefMut};
 
 use ark_ec::{AffineRepr, CurveGroup};
@@ -68,9 +69,9 @@ impl DerefMut for RawBlob {
 }
 
 #[repr(transparent)]
-pub struct EncodedBlobEncoded(pub Vec<Scalar>); // BLOB_ROW_N2 * BLOB_COL_N
+pub struct EncodedBlobScalars(pub Vec<Scalar>); // BLOB_ROW_N2 * BLOB_COL_N
 
-impl Deref for EncodedBlobEncoded {
+impl Deref for EncodedBlobScalars {
     type Target = Vec<Scalar>;
 
     fn deref(&self) -> &Self::Target {
@@ -78,11 +79,29 @@ impl Deref for EncodedBlobEncoded {
     }
 }
 
-impl DerefMut for EncodedBlobEncoded {
+impl DerefMut for EncodedBlobScalars {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
+
+#[repr(transparent)]
+pub struct EncodedBlobH256s(pub Vec<H256>); // BLOB_ROW_N2 * BLOB_COL_N
+
+impl Deref for EncodedBlobH256s {
+    type Target = Vec<H256>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for EncodedBlobH256s {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 
 #[repr(transparent)]
 pub struct RowCommitments(pub Vec<G1Affine>); // BLOB_ROW_N2
@@ -148,12 +167,16 @@ impl SimulateSetup {
 
 
 pub struct EncodedBlobKZG {
-    pub encoded: EncodedBlobEncoded,
+    pub encoded: EncodedBlobScalars,
     pub row_commitments: RowCommitments,
     pub da_commitment: G1Affine,
     pub da_proofs: Vec<G1Affine>
-    //row_merkle_roots: Vec<H256>, // BLOB_ROW_N
-    //data_root: H256,
+}
+
+pub struct EncodedBlobMerkle {
+    pub encoded: EncodedBlobH256s,
+    pub row_merkle_roots: Vec<H256>, // BLOB_ROW_N
+    pub data_root: H256,
 }
 
 // pub struct  EncodedSlice {
