@@ -9,11 +9,15 @@ edition = "2021"
 ethereum-types = "0.14"
 ark-bn254 = "0.4.0"
 ark-ff = "0.4.0"
-ark-poly = { version = "0.4.0", features = ["parallel"] }
+ark-poly = { version = "0.4.0" }
 ark-std = { version = "0.4.0", features = ["getrandom"] }
-ark-ec = { version = "0.4.0", features = ["parallel"] }
+ark-ec = { version = "0.4.0" }
 ark-serialize = { version = "0.4", features = ["derive"] }
 
 [dev-dependencies]
 rand = "0.8"
 test-case = { version = "1.2.3" }
+
+[features]
+default = []
+parallel = ["ark-poly/parallel", "ark-ec/parallel"]
