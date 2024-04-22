@@ -1,4 +1,6 @@
+use binary_merkle_tree::MerkleProof;
 use ethereum_types::H256;
+use sp_runtime::traits::Keccak256;
 use std::ops::{Deref, DerefMut};
 
 use ark_ec::{AffineRepr, CurveGroup};
@@ -173,10 +175,36 @@ pub struct EncodedBlobKZG {
     pub da_proofs: Vec<G1Affine>
 }
 
+#[derive(Debug)]
+pub struct EncodedSliceKZG {
+    pub encoded: Vec<Scalar>, // BLOB_COL_N
+    pub row_commitment: G1Affine,
+    pub da_commitment: G1Affine,
+    pub da_proof: G1Affine
+}
+
 pub struct EncodedBlobMerkle {
     pub encoded: EncodedBlobH256s,
     pub row_merkle_roots: Vec<H256>, // BLOB_ROW_N
     pub data_root: H256,
+}
+
+#[derive(Debug)]
+pub struct EncodedSliceMerkle {
+    pub encoded: Vec<H256>, // BLOB_COL_N
+    pub merkle_proof: MerkleProof<H256, H256>, // root, proof, number_of_leaves, leaf_index, leaf
+}
+
+pub struct EncodedBlob {
+    pub kzg: EncodedBlobKZG,
+    pub merkle: EncodedBlobMerkle
+}
+
+#[derive(Debug)]
+pub struct EncodedSlice {
+    pub index: usize,
+    pub kzg: EncodedSliceKZG,
+    pub merkle: EncodedSliceMerkle
 }
 
 // pub struct  EncodedSlice {
