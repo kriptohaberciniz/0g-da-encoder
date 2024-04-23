@@ -629,7 +629,11 @@ mod tests {
         let mut data = vec![0u8; num_bytes];
         rng.fill(&mut data[..]);
 
-        let setup = SimulateSetup::sim_load();
+        //let setup = SimulateSetup::sim_load();
+        let setup = SimulateSetup {
+            setup_g1: G1PP.to_vec(),
+            setup_g2: G2PP.to_vec()
+        };
         //let encoded_blob = data_to_encoded_blob(data.as_slice(), &setup)?;
         let encoded_blob = data_to_encoded_blob_amt(data.as_slice(), &setup, &ENCODER)?;
         
