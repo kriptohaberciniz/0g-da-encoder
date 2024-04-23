@@ -1,16 +1,17 @@
 use binary_merkle_tree::MerkleProof;
 use ethereum_types::H256;
-use sp_runtime::traits::Keccak256;
 use std::ops::{Deref, DerefMut};
 
-use ark_ec::{AffineRepr, CurveGroup};
+use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup};
 use ark_ff::{One, UniformRand};
-use ark_bn254::{Fr as Scalar, G1Affine, G2Affine};
+use ark_bn254::{Fr as Scalar, G1Affine, G1Projective, G2Affine};
+use amt::HalfBlob;
+use amt::BlobRow;
 
 pub const RAW_UNIT: usize = 31;
 pub const BLOB_UNIT: usize = 32;
-pub const BLOB_ROW_LOG: usize = 10;
-pub const BLOB_COL_LOG: usize = 10;
+pub const BLOB_ROW_LOG: usize = 6;
+pub const BLOB_COL_LOG: usize = 7;
 pub const BLOB_ROW_N: usize = 1 << BLOB_ROW_LOG;
 pub const BLOB_ROW_N2: usize = BLOB_ROW_N << 1;
 pub const BLOB_COL_N: usize = 1 << BLOB_COL_LOG;
@@ -85,6 +86,11 @@ impl DerefMut for EncodedBlobScalars {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
+}
+
+pub struct EncodedBlobHalves<PE: Pairing, const BLOB_COL_LOG: usize, const BLOB_ROW_LOG: usize> { // BLOB_ROW_N2 * BLOB_COL_N
+    pub primary: HalfBlob<PE, BLOB_COL_LOG, BLOB_ROW_LOG>,
+    pub coset: HalfBlob<PE, BLOB_COL_LOG, BLOB_ROW_LOG>
 }
 
 #[repr(transparent)]
@@ -195,7 +201,19 @@ pub struct EncodedSliceMerkle {
     pub merkle_proof: MerkleProof<H256, H256>, // root, proof, number_of_leaves, leaf_index, leaf
 }
 
+#[derive(Debug)]
+pub struct EncodedSliceHalves<PE: Pairing, const BLOB_COL_LOG: usize, const BLOB_ROW_LOG: usize> {
+    pub commitment: G1Projective,
+    pub row: BlobRow<PE, BLOB_COL_LOG, BLOB_ROW_LOG> // index, row, proof
+}
+
 pub struct EncodedBlob {
+    pub kzg: EncodedBlobKZG,
+    pub merkle: EncodedBlobMerkle
+}
+
+pub struct EncodedBlobAMT<PE: Pairing, const BLOB_COL_LOG: usize, const BLOB_ROW_LOG: usize> {
+    pub amt: EncodedBlobHalves<PE, BLOB_COL_LOG, BLOB_ROW_LOG>,
     pub kzg: EncodedBlobKZG,
     pub merkle: EncodedBlobMerkle
 }
@@ -207,6 +225,13 @@ pub struct EncodedSlice {
     pub merkle: EncodedSliceMerkle
 }
 
+#[derive(Debug)]
+pub struct EncodedSliceAMT<PE: Pairing, const BLOB_COL_LOG: usize, const BLOB_ROW_LOG: usize> {
+    pub index: usize,
+    pub amt: EncodedSliceHalves<PE, BLOB_COL_LOG, BLOB_ROW_LOG>,
+    pub kzg: EncodedSliceKZG,
+    pub merkle: EncodedSliceMerkle
+}
 // pub struct  EncodedSlice {
 //     slice: [H256; BLOBN],
 //     row_coeff: [Scalar; BLOBN],

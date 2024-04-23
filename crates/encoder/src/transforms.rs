@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::types::*;
+use amt::EncoderContext;
 use ark_ec::{pairing::{Pairing, PairingOutput}, AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_std::{iterable::Iterable, Zero};
 use ark_bn254::{Bn254, Fr as Scalar, G1Affine, G1Projective, G2Projective};
@@ -12,6 +13,7 @@ use ethereum_types::H256;
 use sp_runtime::traits::Keccak256;
 //use once_cell::sync::Lazy;
 // use transpose::transpose;
+type PE = Bn254;
 
 fn raw_unit_to_scalar(chunk: &[u8]) -> Scalar {
     // <Scalar as PrimeField>::from_le_bytes_mod_order(&chunk) // 76ms
@@ -49,6 +51,13 @@ pub fn raw_blob_to_encoded(raw_blob: &RawBlob) -> EncodedBlobScalars {
         .flat_map(|row_index| raw_blob_transpose.iter().map(|col| col[row_index].clone()).collect::<Vec<Scalar>>())
         .collect();
     EncodedBlobScalars(encoded_flatten)
+}
+
+/// AMT
+pub fn raw_blob_to_encoded_amt(raw_blob: &RawBlob, encoder_amt: &EncoderContext<PE>) -> EncodedBlobHalves<PE, BLOB_COL_LOG, BLOB_ROW_LOG> {
+    let (primary_blob, coset_blob) =
+        encoder_amt.process_blob::<BLOB_COL_LOG, BLOB_ROW_LOG>(raw_blob.as_slice());
+    EncodedBlobHalves {primary: primary_blob, coset: coset_blob}
 }
 
 pub fn coeffs_to_commitment(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> G1Affine {
@@ -230,6 +239,24 @@ pub fn encoded_h256s_to_merkle(encoded: EncodedBlobH256s) -> EncodedBlobMerkle {
     }
 }
 
+pub fn data_to_encoded_blob_amt(data: &[u8], setup: &SimulateSetup, encoder_amt: &EncoderContext<PE>) -> Result<EncodedBlobAMT<PE, BLOB_COL_LOG, BLOB_ROW_LOG>, String> {
+    // zero-padding original data to raw_data
+    let raw_data: RawData = RawData::try_from(data)?;
+    // raw_data_to_raw_blob
+    let raw_blob = raw_data_to_raw_blob(&raw_data);
+    // encode
+    let encoded_amt = raw_blob_to_encoded_amt(&raw_blob, encoder_amt);
+    let encoded = EncodedBlobScalars([encoded_amt.primary.blob.to_vec(), encoded_amt.coset.blob.to_vec()].concat());
+    // KZG
+    let encoded_blob_kzg = encoded_to_kzg(encoded, &setup).unwrap();
+    // prepare H256 for Merkle
+    let encoded_h256 = EncodedBlobH256s(encoded_blob_scalars_to_h256s(&encoded_blob_kzg.encoded).unwrap());
+    // Merkle
+    let encoded_blob_merkle: EncodedBlobMerkle = encoded_h256s_to_merkle(encoded_h256);
+    // integrate blob
+    Ok(EncodedBlobAMT {amt: encoded_amt, kzg: encoded_blob_kzg, merkle: encoded_blob_merkle})
+}
+
 pub fn data_to_encoded_blob(data: &[u8], setup: &SimulateSetup) -> Result<EncodedBlob, String> {
     // zero-padding original data to raw_data
     let raw_data: RawData = RawData::try_from(data)?;
@@ -265,6 +292,45 @@ pub fn encoded_blob_to_slice(encoded_blob: &EncodedBlob, index: usize) -> Result
     };
     Ok(EncodedSlice {
         index,
+        kzg: kzg_slice,
+        merkle: merkle_slice
+    })
+}
+
+pub fn encoded_blob_to_slice_amt(encoded_blob: &EncodedBlobAMT<PE, BLOB_COL_LOG, BLOB_ROW_LOG>, index: usize) 
+-> Result<EncodedSliceAMT<PE, BLOB_COL_LOG, BLOB_ROW_LOG>, String> {
+    if index >= BLOB_ROW_N2 { // || index < 0 {
+        return Err(format!("Request with overflow index {}, while index must < {}", index, BLOB_ROW_N2));
+    }
+    let start_index_2d: usize = index << BLOB_COL_LOG;
+    let end_index_2d: usize = start_index_2d + BLOB_COL_N;
+    let kzg_slice = EncodedSliceKZG {
+        encoded: encoded_blob.kzg.encoded[start_index_2d..end_index_2d].to_vec(),
+        row_commitment: encoded_blob.kzg.row_commitments[index],
+        da_commitment: encoded_blob.kzg.da_commitment,
+        da_proof: encoded_blob.kzg.da_proofs[index]
+    };
+    let merkle_slice = EncodedSliceMerkle {
+        encoded: encoded_blob.merkle.encoded[start_index_2d..end_index_2d].to_vec(),
+        merkle_proof: merkle_proof::<Keccak256, _, _>(encoded_blob.merkle.row_merkle_roots.clone(), index)
+    };
+    let amt_slice = {
+        if index < BLOB_ROW_N {
+            EncodedSliceHalves {
+                commitment: encoded_blob.amt.primary.commitment,
+                row: encoded_blob.amt.primary.get_row(index)
+            }
+        }
+        else {
+            EncodedSliceHalves {
+                commitment: encoded_blob.amt.coset.commitment,
+                row: encoded_blob.amt.coset.get_row(index - BLOB_ROW_N)
+            }
+        }
+    };
+    Ok(EncodedSliceAMT {
+        index,
+        amt: amt_slice,
         kzg: kzg_slice,
         merkle: merkle_slice
     })
@@ -327,6 +393,90 @@ pub fn verify_slice(encoded_slice: &EncodedSlice, setup: &SimulateSetup) -> bool
     )
 }
 
+pub fn verify_slice_amt(encoded_slice: &EncodedSliceAMT<PE, BLOB_COL_LOG, BLOB_ROW_LOG>, setup: &SimulateSetup, encoder_amt: &EncoderContext<PE>) -> bool {
+    // verify index
+    if encoded_slice.index >= BLOB_ROW_N2 
+        || encoded_slice.index != encoded_slice.merkle.merkle_proof.leaf_index 
+    { // || index < 0 {
+        return false
+    }
+    // verify amt row index
+    if encoded_slice.index < BLOB_ROW_N {
+        if encoded_slice.index != encoded_slice.amt.row.index {
+            return false
+        }   
+    }
+    else {
+        if encoded_slice.index - BLOB_ROW_N != encoded_slice.amt.row.index {
+            return false
+        }
+    }
+    // verify length
+    if encoded_slice.merkle.merkle_proof.number_of_leaves != BLOB_ROW_N2 {
+        return false
+    }
+    // verify scalars_to_h256s
+    let encoded_h256_try = encoded_blob_scalars_to_h256s(&encoded_slice.kzg.encoded);
+    let encoded_h256 = match encoded_h256_try {
+        Ok(data) => data,
+        Err(_) => return false
+    };
+    if encoded_h256 != encoded_slice.merkle.encoded {
+        return false
+    }
+    // verify amt
+    let amt_try = {
+        if encoded_slice.index < BLOB_ROW_N {
+            encoded_slice.amt.row.verify(&encoder_amt.amt, encoded_slice.amt.commitment)
+        }
+        else {
+            encoded_slice.amt.row.verify(&encoder_amt.coset_amt, encoded_slice.amt.commitment)
+        }
+    };
+    match amt_try {
+        Err(_) => return false,
+        _ => ()
+    }
+    // verify KZG local
+    let domain_blob_col_n = Radix2EvaluationDomain::<Scalar>::new(BLOB_COL_N).unwrap();
+    let kzg_local = evals_to_commitment(&encoded_slice.kzg.encoded, domain_blob_col_n, setup);
+    if kzg_local != encoded_slice.kzg.row_commitment {
+        return false
+    }
+    // verify KZG global
+    let row_commitment_scalar_try = g1_to_scalar(&encoded_slice.kzg.row_commitment);
+    let row_commitment_scalar = match row_commitment_scalar_try {
+        Ok(data) => data,
+        Err(_) => return false
+    };
+    let domain_blob_row_n2 = Radix2EvaluationDomain::<Scalar>::new(BLOB_ROW_N2).unwrap();
+    let domain: Scalar = domain_blob_row_n2.elements().nth(encoded_slice.index).unwrap();
+    let verify_kzg_global = verify_kzg(
+        row_commitment_scalar, 
+        encoded_slice.kzg.da_commitment, 
+        encoded_slice.kzg.da_proof, 
+        domain, 
+        setup
+    );
+    if !verify_kzg_global {
+        return false
+    }
+    // verify Merkle local
+    let row_merkle_root = merkle_root::<Keccak256, _>(encoded_slice.merkle.encoded.clone());
+    if row_merkle_root != encoded_slice.merkle.merkle_proof.leaf {
+        return false
+    }
+    // verify Merkle global
+    verify_proof::<Keccak256, _, _>(
+        &encoded_slice.merkle.merkle_proof.root, 
+        encoded_slice.merkle.merkle_proof.proof.clone(), 
+        encoded_slice.merkle.merkle_proof.number_of_leaves, 
+        encoded_slice.merkle.merkle_proof.leaf_index, 
+        &encoded_slice.merkle.merkle_proof.leaf
+    )
+}
+
+
 #[cfg(test)]
 mod tests {
     use crate::*;
@@ -336,9 +486,36 @@ mod tests {
     use rand::{rngs::StdRng, Rng, SeedableRng};
     use sp_runtime::traits::Keccak256;
     use test_case::test_case;
-    use ark_bn254::{Fr as Scalar, G1Affine};
+    use ark_bn254::{Bn254, Fr as Scalar, G1Affine, G2Affine};
     use ark_ff::{Field, MontConfig, UniformRand};
     use ark_std::rand::thread_rng;
+    use amt::{EncoderContext, PowerTau, AMTParams};
+    use once_cell::sync::Lazy;
+
+    const TEST_LEVEL: usize = 8;
+    const TEST_LENGTH: usize = 1 << TEST_LEVEL;
+    type PE = Bn254;
+    static PP: Lazy<PowerTau<PE>> =
+        Lazy::new(|| PowerTau::<PE>::from_dir("../amt/pp", TEST_LEVEL, true));
+
+    static AMT: Lazy<AMTParams<PE>> = Lazy::new(|| AMTParams::from_pp(PP.clone(), false));
+
+    static G1PP: Lazy<Vec<G1Affine>> =
+        Lazy::new(|| PP.0.iter().copied().map(|x| G1Affine::from(x)).collect());
+
+    static G2PP: Lazy<Vec<G2Affine>> =
+        Lazy::new(|| PP.1.iter().copied().map(|x| G2Affine::from(x)).collect());
+
+    static DOMAIN: Lazy<Radix2EvaluationDomain<Scalar>> =
+        Lazy::new(|| Radix2EvaluationDomain::new(TEST_LENGTH).unwrap());
+
+    static W: Lazy<Scalar> = Lazy::new(|| DOMAIN.group_gen);
+    static ENCODER: Lazy<EncoderContext<PE>> =
+        Lazy::new(|| EncoderContext::new("../amt/pp", BLOB_ROW_LOG + BLOB_COL_LOG, true));
+
+    // #[test]
+    // fn test_amt_setup() {}
+
     #[test]
     fn test_bytes_to_scalar() {
         let chunk = [0u8; 31];
@@ -363,7 +540,7 @@ mod tests {
     }
     #[test_case(0 => Ok(()); "zero sized data")]
     #[test_case(1 => Ok(()); "one sized data")]
-    #[test_case(12345565 => Ok(()); "normal sized data")]
+    #[test_case(1234 => Ok(()); "normal sized data")]
     #[test_case(RAW_UNIT * BLOB_ROW_N * BLOB_COL_N => Ok(()); "exact sized data")]
     #[test_case(RAW_UNIT * BLOB_ROW_N * BLOB_COL_N + 1 => Err(format!("Input byte slice length {} exceeds the required length {} for RawData.", RAW_UNIT * BLOB_ROW_N * BLOB_COL_N + 1, RAW_UNIT * BLOB_ROW_N * BLOB_COL_N)); "overflow sized data")]
     fn test_batcher_encode_step_by_step(num_bytes: usize) -> Result<(), String> {
@@ -389,7 +566,11 @@ mod tests {
         println!("Time taken for RS_encode: {:?}ms with original {} bytes and raw_data {} bytes", duration, num_bytes, raw_data.len());
 
         // KZG
-        let setup = SimulateSetup::sim_load();
+        // let setup = SimulateSetup::sim_load();
+        let setup = SimulateSetup {
+            setup_g1: G1PP.to_vec(),
+            setup_g2: G2PP.to_vec()
+        };
         let start = Instant::now();
         let encoded_blob_kzg = encoded_to_kzg(encoded, &setup).unwrap();
         let duration = start.elapsed().as_millis();
@@ -438,7 +619,7 @@ mod tests {
 
     #[test_case(0 => Ok(()); "pipeline: zero sized data")]
     #[test_case(1 => Ok(()); "pipeline: one sized data")]
-    #[test_case(12345565 => Ok(()); "pipeline: normal sized data")]
+    #[test_case(1234 => Ok(()); "pipeline: normal sized data")]
     #[test_case(RAW_UNIT * BLOB_ROW_N * BLOB_COL_N => Ok(()); "pipeline: exact sized data")]
     #[test_case(RAW_UNIT * BLOB_ROW_N * BLOB_COL_N + 1 => Err(format!("Input byte slice length {} exceeds the required length {} for RawData.", RAW_UNIT * BLOB_ROW_N * BLOB_COL_N + 1, RAW_UNIT * BLOB_ROW_N * BLOB_COL_N)); "pipeline: overflow sized data")]
     pub fn test_batcher_encode(num_bytes: usize) -> Result<(), String> {
@@ -449,7 +630,8 @@ mod tests {
         rng.fill(&mut data[..]);
 
         let setup = SimulateSetup::sim_load();
-        let encoded_blob = data_to_encoded_blob(data.as_slice(), &setup)?;
+        //let encoded_blob = data_to_encoded_blob(data.as_slice(), &setup)?;
+        let encoded_blob = data_to_encoded_blob_amt(data.as_slice(), &setup, &ENCODER)?;
         
         Ok(())
     }
@@ -461,7 +643,11 @@ mod tests {
         let mut data = vec![0u8; RAW_UNIT * BLOB_ROW_N * BLOB_COL_N];
         rng.fill(&mut data[..]);
 
-        let setup = SimulateSetup::sim_load();
+        // let setup = SimulateSetup::sim_load();
+        let setup = SimulateSetup {
+            setup_g1: G1PP.to_vec(),
+            setup_g2: G2PP.to_vec()
+        };
         let encoded_blob = data_to_encoded_blob(data.as_slice(), &setup).unwrap();
 
         let mut encoded_slice_0 = encoded_blob_to_slice(&encoded_blob, 0).unwrap();
@@ -478,6 +664,37 @@ mod tests {
         
         for index in 0..BLOB_ROW_N2 {
             assert!(verify_slice(&encoded_blob_to_slice(&encoded_blob, index).unwrap(), &setup));
+        }
+    }
+
+    #[test]
+    fn test_batcher_slice_and_verify_amt() {
+        let seed = 22u64;
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut data = vec![0u8; RAW_UNIT * BLOB_ROW_N * BLOB_COL_N];
+        rng.fill(&mut data[..]);
+
+        // let setup = SimulateSetup::sim_load();
+        let setup = SimulateSetup {
+            setup_g1: G1PP.to_vec(),
+            setup_g2: G2PP.to_vec()
+        };
+        let encoded_blob = data_to_encoded_blob_amt(data.as_slice(), &setup, &ENCODER).unwrap();
+
+        let mut encoded_slice_0 = encoded_blob_to_slice_amt(&encoded_blob, 0).unwrap();
+        assert!(verify_slice_amt(&encoded_slice_0, &setup, &ENCODER));
+        encoded_slice_0.index = 1;
+        assert!(!verify_slice_amt(&encoded_slice_0, &setup, &ENCODER));
+        encoded_slice_0.index = BLOB_ROW_N2;
+        assert!(!verify_slice_amt(&encoded_slice_0, &setup, &ENCODER));
+        let mut encoded_slice_max = encoded_blob_to_slice_amt(&encoded_blob, BLOB_ROW_N2 - 1).unwrap();
+        assert!(verify_slice_amt(&encoded_slice_max, &setup, &ENCODER));
+        encoded_slice_max.merkle.merkle_proof.leaf_index = 1;
+        assert!(!verify_slice_amt(&encoded_slice_max, &setup, &ENCODER));
+        encoded_blob_to_slice_amt(&encoded_blob, BLOB_ROW_N2).expect_err("Expected error for overflow row index");
+        
+        for index in 0..BLOB_ROW_N2 {
+            assert!(verify_slice_amt(&encoded_blob_to_slice_amt(&encoded_blob, index).unwrap(), &setup, &ENCODER));
         }
     }
 }

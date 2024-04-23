@@ -26,6 +26,7 @@ impl<PE: Pairing> AllProofs<PE> {
     }
 }
 
+#[derive(Debug)]
 pub struct Proof<PE: Pairing>(Vec<(G1Aff<PE>, G1Aff<PE>)>);
 
 impl<PE: Pairing> Deref for Proof<PE> {

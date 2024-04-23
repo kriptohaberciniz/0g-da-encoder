@@ -13,8 +13,8 @@ use crate::{
 };
 
 pub struct EncoderContext<PE: Pairing> {
-    amt: AMTParams<PE>,
-    coset_amt: AMTParams<PE>,
+    pub amt: AMTParams<PE>,
+    pub coset_amt: AMTParams<PE>,
     log_n: usize,
 }
 
@@ -98,6 +98,7 @@ impl<PE: Pairing, const LOG_COL: usize, const LOG_ROW: usize> HalfBlob<PE, LOG_C
     }
 }
 
+#[derive(Debug)]
 pub struct BlobRow<PE: Pairing, const LOG_COL: usize, const LOG_ROW: usize> {
     pub index: usize,
     pub row: Vec<Fr<PE>>,
@@ -152,6 +153,12 @@ mod tests {
             let commitment = primary_blob.commitment;
             let row = primary_blob.get_row(index);
             row.verify(&ENCODER.amt, commitment).unwrap();
+        }
+
+        for index in 0..(1 << LOG_ROW) {
+            let commitment = coset_blob.commitment;
+            let row = coset_blob.get_row(index);
+            row.verify(&ENCODER.coset_amt, commitment).unwrap();
         }
     }
 
