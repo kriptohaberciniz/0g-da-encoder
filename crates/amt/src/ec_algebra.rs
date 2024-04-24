@@ -6,7 +6,7 @@
 pub use ark_ec::pairing::Pairing;
 pub use ark_ec::{AffineRepr, CurveGroup, Group, VariableBaseMSM};
 pub use ark_ff::{
-    utils::k_adicity, BigInteger, FftField, Field, One, PrimeField, UniformRand, Zero,
+    utils::k_adicity, BigInt, BigInteger, FftField, Field, One, PrimeField, UniformRand, Zero,
 };
 pub use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 pub use ark_serialize::{
@@ -18,4 +18,7 @@ pub type G1Aff<PE> = <PE as Pairing>::G1Affine;
 pub type G2<PE> = <PE as Pairing>::G2;
 pub type G2Aff<PE> = <PE as Pairing>::G2Affine;
 pub type Fr<PE> = <PE as Pairing>::ScalarField;
+pub type Fq<PE> = <PE as Pairing>::BaseField;
 pub type FrInt<PE> = <Fr<PE> as PrimeField>::BigInt;
+pub type FqInt<PE> = <Fq<PE> as PrimeField>::BigInt;
+pub type Fq2<PE> = <G2Aff<PE> as AffineRepr>::BaseField;

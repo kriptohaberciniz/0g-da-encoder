@@ -51,7 +51,9 @@ impl<PE: Pairing> PowerTau<PE> {
         let gen1 = G1Aff::<PE>::generator();
         let gen2 = G2Aff::<PE>::generator();
 
+        println!("Initialize gen1");
         let g1pp: Vec<G1Aff<PE>> = power_tau(&gen1, &tau, 1 << depth);
+        println!("Initialize gen2");
         let g2pp: Vec<G2Aff<PE>> = power_tau(&gen2, &tau, 1 << depth);
 
         return PowerTau(g1pp, g2pp);
@@ -59,6 +61,7 @@ impl<PE: Pairing> PowerTau<PE> {
 
     fn from_dir_inner(file: &str, expected_depth: usize) -> Result<PowerTau<PE>, error::Error> {
         let buffer = File::open(file)?;
+        println!("Load pp");
         let pp: PowerTau<PE> = CanonicalDeserialize::deserialize_compressed_unchecked(buffer)?;
         let (g1_len, g2_len) = (pp.0.len(), pp.1.len());
         let depth = k_adicity(2, g1_len as u64) as usize;
