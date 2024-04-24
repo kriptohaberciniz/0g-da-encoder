@@ -3,7 +3,7 @@ extern crate tracing;
 
 use std::{error::Error, str::FromStr, time::Duration};
 
-use grpc::EncoderService;
+use grpc::{EncoderService, build_extension};
 
 use tokio::time::{sleep_until, Instant};
 use tracing::Level;
@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     data.push(rand::random());
                 }
                 let ts = Instant::now();
-                if let Err(e) = service.build_extension(
+                if let Err(e) = build_extension(
                     data,
                     BlobLength {
                         cols: MAX_COLS,

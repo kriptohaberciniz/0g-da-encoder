@@ -1,9 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-	"core",
-	"crates/kate-recovery",
-	"crates/kate",
 	"crates/amt",
 	"crates/encoder",
 	"grpc",
@@ -13,29 +10,18 @@ members = [
 ]
 
 [workspace.dependencies]
-zerog-core = { path = "./core", default-features = false } 
-kate = { path = "./crates/kate", default-features = false } 
 types = { path = "./types" }
 amt = { path = "./crates/amt", default-features = false }
-kate-recovery = { path = "./crates/kate-recovery", default-features = false } 
 grpc = { path = "./grpc" } 
 server = { path = "./server" } 
 encoder = {path = "./crates/encoder" }
 
 [profile.dev.package]
-nalgebra = { opt-level = 3 }
-blst = { opt-level = 3 }
-dusk-bls12_381 = { opt-level = 3 }
-dusk-plonk = { opt-level = 3 }
-dusk-jubjub = { opt-level = 3 }
-dusk-bytes = { opt-level = 3 }
 rayon = { opt-level = 3 }
 rayon-core = { opt-level = 3 }
-poly-multiproof = { opt-level = 3 }
-ark-bls12-381 = { opt-level = 3 }
+ark-bn254 = { opt-level = 3 }
 ark-ec = { opt-level = 3 }
 ark-ff = { opt-level = 3 }
 ark-poly = { opt-level = 3 }
 ark-serialize = { opt-level = 3 }
 ark-std = { opt-level = 3 }
-merlin = { opt-level = 3 }
