@@ -2,11 +2,11 @@ use binary_merkle_tree::MerkleProof;
 use ethereum_types::H256;
 use std::ops::{Deref, DerefMut};
 
+use amt::BlobRow;
+use amt::HalfBlob;
+use ark_bn254::{Fr as Scalar, G1Affine, G1Projective, G2Affine};
 use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup};
 use ark_ff::{One, UniformRand};
-use ark_bn254::{Fr as Scalar, G1Affine, G1Projective, G2Affine};
-use amt::HalfBlob;
-use amt::BlobRow;
 
 pub const RAW_UNIT: usize = 31;
 pub const BLOB_UNIT: usize = 32;
@@ -48,11 +48,14 @@ impl TryFrom<&[u8]> for RawData {
             array[..value_len].copy_from_slice(&value[..]);
             Ok(RawData(array))
         } else {
-            Err(format!("Input byte slice length {} exceeds the required length {} for RawData.", value.len(), RAW_UNIT * BLOB_ROW_N * BLOB_COL_N))
+            Err(format!(
+                "Input byte slice length {} exceeds the required length {} for RawData.",
+                value.len(),
+                RAW_UNIT * BLOB_ROW_N * BLOB_COL_N
+            ))
         }
     }
 }
-
 
 #[repr(transparent)]
 pub struct RawBlob(pub Vec<Scalar>); // BLOB_ROW_N * BLOB_COL_N
@@ -88,9 +91,10 @@ impl DerefMut for EncodedBlobScalars {
     }
 }
 
-pub struct EncodedBlobHalves<PE: Pairing, const BLOB_COL_LOG: usize, const BLOB_ROW_LOG: usize> { // BLOB_ROW_N2 * BLOB_COL_N
+pub struct EncodedBlobHalves<PE: Pairing, const BLOB_COL_LOG: usize, const BLOB_ROW_LOG: usize> {
+    // BLOB_ROW_N2 * BLOB_COL_N
     pub primary: HalfBlob<PE, BLOB_COL_LOG, BLOB_ROW_LOG>,
-    pub coset: HalfBlob<PE, BLOB_COL_LOG, BLOB_ROW_LOG>
+    pub coset: HalfBlob<PE, BLOB_COL_LOG, BLOB_ROW_LOG>,
 }
 
 #[repr(transparent)]
@@ -109,7 +113,6 @@ impl DerefMut for EncodedBlobH256s {
         &mut self.0
     }
 }
-
 
 #[repr(transparent)]
 pub struct RowCommitments(pub Vec<G1Affine>); // BLOB_ROW_N2
@@ -137,7 +140,7 @@ impl DerefMut for RowCommitments {
 #[derive(Clone)]
 pub struct SimulateSetup {
     pub setup_g1: Vec<G1Affine>,
-    pub setup_g2: Vec<G2Affine>
+    pub setup_g2: Vec<G2Affine>,
 } // >= num_cols for each row's commitment
 
 //pub const KZG_SETUP_N: usize = BLOB_ROW_N2; // std::cmp::max(BLOB_ROW_N2, BLOB_COL_N);
@@ -147,7 +150,7 @@ impl SimulateSetup {
         use ark_std::rand::thread_rng;
         let mut rng = thread_rng();
         let s: Scalar = Scalar::rand(&mut rng);
-        //let s = <Scalar as Field>::from_random_bytes(&(3usize.to_le_bytes())).unwrap(); // 
+        //let s = <Scalar as Field>::from_random_bytes(&(3usize.to_le_bytes())).unwrap(); //
         let mut all_s: Vec<Scalar> = vec![s; std::cmp::max(BLOB_ROW_N2, BLOB_COL_N)];
         all_s[0] = Scalar::one();
         all_s = all_s
@@ -166,19 +169,15 @@ impl SimulateSetup {
             .iter()
             .map(|x| (G2Affine::generator() * x).into_affine())
             .collect();
-        Self {
-            setup_g1,
-            setup_g2
-        }
+        Self { setup_g1, setup_g2 }
     }
 }
-
 
 pub struct EncodedBlobKZG {
     pub encoded: EncodedBlobScalars,
     pub row_commitments: RowCommitments,
     pub da_commitment: G1Affine,
-    pub da_proofs: Vec<G1Affine>
+    pub da_proofs: Vec<G1Affine>,
 }
 
 #[derive(Debug)]
@@ -186,7 +185,7 @@ pub struct EncodedSliceKZG {
     pub encoded: Vec<Scalar>, // BLOB_COL_N
     pub row_commitment: G1Affine,
     pub da_commitment: G1Affine,
-    pub da_proof: G1Affine
+    pub da_proof: G1Affine,
 }
 
 pub struct EncodedBlobMerkle {
@@ -197,32 +196,32 @@ pub struct EncodedBlobMerkle {
 
 #[derive(Debug)]
 pub struct EncodedSliceMerkle {
-    pub encoded: Vec<H256>, // BLOB_COL_N
+    pub encoded: Vec<H256>,                    // BLOB_COL_N
     pub merkle_proof: MerkleProof<H256, H256>, // root, proof, number_of_leaves, leaf_index, leaf
 }
 
 #[derive(Debug)]
 pub struct EncodedSliceHalves<PE: Pairing, const BLOB_COL_LOG: usize, const BLOB_ROW_LOG: usize> {
     pub commitment: G1Projective,
-    pub row: BlobRow<PE, BLOB_COL_LOG, BLOB_ROW_LOG> // index, row, proof
+    pub row: BlobRow<PE, BLOB_COL_LOG, BLOB_ROW_LOG>, // index, row, proof
 }
 
 pub struct EncodedBlob {
     pub kzg: EncodedBlobKZG,
-    pub merkle: EncodedBlobMerkle
+    pub merkle: EncodedBlobMerkle,
 }
 
 pub struct EncodedBlobAMT<PE: Pairing, const BLOB_COL_LOG: usize, const BLOB_ROW_LOG: usize> {
     pub amt: EncodedBlobHalves<PE, BLOB_COL_LOG, BLOB_ROW_LOG>,
     pub kzg: EncodedBlobKZG,
-    pub merkle: EncodedBlobMerkle
+    pub merkle: EncodedBlobMerkle,
 }
 
 #[derive(Debug)]
 pub struct EncodedSlice {
     pub index: usize,
     pub kzg: EncodedSliceKZG,
-    pub merkle: EncodedSliceMerkle
+    pub merkle: EncodedSliceMerkle,
 }
 
 #[derive(Debug)]
@@ -230,7 +229,7 @@ pub struct EncodedSliceAMT<PE: Pairing, const BLOB_COL_LOG: usize, const BLOB_RO
     pub index: usize,
     pub amt: EncodedSliceHalves<PE, BLOB_COL_LOG, BLOB_ROW_LOG>,
     pub kzg: EncodedSliceKZG,
-    pub merkle: EncodedSliceMerkle
+    pub merkle: EncodedSliceMerkle,
 }
 // pub struct  EncodedSlice {
 //     slice: [H256; BLOBN],

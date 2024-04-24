@@ -20,13 +20,13 @@ pub fn pp_file_name<PE: Pairing>(depth: usize) -> String {
     file_name::<PE>("power-tau", depth)
 }
 
-pub fn amtp_file_name<PE: Pairing>(depth: usize, coset: bool) -> String {
-    let prefix = if coset {
-        "amt-params-coset"
-    } else {
-        "amt-params"
-    };
-    file_name::<PE>(prefix, depth)
+pub fn amtp_file_name<PE: Pairing>(depth: usize, coset: bool, mont: bool) -> String {
+    let prefix = format!(
+        "amt-params{}{}",
+        if coset { "-coset" } else { "" },
+        if mont { "-mont" } else { "" }
+    );
+    file_name::<PE>(&prefix, depth)
 }
 
 #[inline]

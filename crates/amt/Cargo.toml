@@ -18,6 +18,20 @@ ark-poly = "0.4"
 ark-serialize = "0.4"
 
 once_cell = "1.19"
+ark-bn254 = "0.4"
+
 
 [dev-dependencies]
-ark-bn254 = "0.4"
+
+[features]
+dev = ["ark-poly/parallel"]
+
+[[bin]]
+name = "build_params"
+test = false
+bench = false
+
+[[bin]]
+name = "load_mont_file"
+test = false
+bench = false

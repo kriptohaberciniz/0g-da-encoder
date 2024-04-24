@@ -16,7 +16,7 @@ members = [
 zerog-core = { path = "./core", default-features = false } 
 kate = { path = "./crates/kate", default-features = false } 
 types = { path = "./types" }
-amt = { path = "./crates/amt" }
+amt = { path = "./crates/amt", default-features = false }
 kate-recovery = { path = "./crates/kate-recovery", default-features = false } 
 grpc = { path = "./grpc" } 
 server = { path = "./server" } 
