@@ -14,6 +14,7 @@ poly-multiproof = { git = "https://github.com/availproject/poly-multiproof", def
 # Internal
 zerog-core = { workspace = true, default-features = false }
 kate-recovery = { workspace = true, default-features = false }
+ppot2ark = { workspace = true, default-features = false }
 
 dusk-plonk = { git = "https://github.com/availproject/plonk.git", tag = "v0.12.0-polygon-2", optional = true }
 
