@@ -3,10 +3,7 @@ mod generate;
 mod prove;
 mod verify;
 
-use crate::ec_algebra::{
-    CanonicalDeserialize, CanonicalSerialize, 
-    G1Aff, G2Aff, Pairing, G2,
-};
+use crate::ec_algebra::{CanonicalDeserialize, CanonicalSerialize, G1Aff, G2Aff, Pairing, G2};
 
 #[derive(CanonicalDeserialize, CanonicalSerialize, PartialEq, Eq)]
 pub struct AMTParams<PE: Pairing> {
@@ -19,7 +16,10 @@ pub struct AMTParams<PE: Pairing> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ec_algebra::{Fr, UniformRand, G1, Radix2EvaluationDomain, EvaluationDomain, Zero, Field}, PowerTau};
+    use crate::{
+        ec_algebra::{EvaluationDomain, Field, Fr, Radix2EvaluationDomain, UniformRand, Zero, G1},
+        PowerTau,
+    };
     use once_cell::sync::Lazy;
 
     pub const TEST_LEVEL: usize = 8;
