@@ -1,12 +1,13 @@
-use std::net::SocketAddr;
+mod service;
 
-pub use service::{encoder::encoder_server::EncoderServer, EncoderService};
+pub use service::{EncoderService, EncoderServer};
+pub use service::build_extension;
+
+use std::net::SocketAddr;
 use tonic::transport::Server;
 
-#[macro_use]
-extern crate tracing;
 
-pub mod service;
+
 
 const MESSAGE_SIZE_LIMIT: usize = 1024 * 1024 * 1024; // 1G
 
@@ -22,3 +23,10 @@ pub async fn run_server(addr: SocketAddr) -> Result<(), Box<dyn std::error::Erro
         .await?;
     Ok(())
 }
+
+
+
+// mod deprecated;
+// pub use deprecated::{encoder::encoder_server::EncoderServer, EncoderService};
+// #[macro_use]
+// extern crate tracing;

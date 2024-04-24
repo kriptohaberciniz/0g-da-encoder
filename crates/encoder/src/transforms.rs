@@ -13,7 +13,23 @@ use ark_serialize::{CanonicalSerialize, SerializationError};
 use ark_std::{iterable::Iterable, Zero};
 use binary_merkle_tree::{merkle_proof, merkle_root, verify_proof};
 use ethereum_types::H256;
-use sp_runtime::traits::Keccak256;
+use keccak_hasher::KeccakHasher;
+use hash_db::Hasher;
+
+#[derive(Default, Debug, Clone, PartialEq)]
+pub struct Keccak256;
+impl Hasher for Keccak256 {
+	type Out = H256;
+
+	type StdHasher = <KeccakHasher as Hasher>::StdHasher;
+
+	const LENGTH: usize = 32;
+
+	fn hash(x: &[u8]) -> Self::Out {
+		H256(KeccakHasher::hash(x))
+	}
+}
+
 //use once_cell::sync::Lazy;
 // use transpose::transpose;
 type PE = Bn254;
@@ -589,7 +605,6 @@ mod tests {
     use binary_merkle_tree::{merkle_proof, verify_proof};
     use once_cell::sync::Lazy;
     use rand::{rngs::StdRng, Rng, SeedableRng};
-    use sp_runtime::traits::Keccak256;
     use std::time::Instant;
     use test_case::test_case;
 
