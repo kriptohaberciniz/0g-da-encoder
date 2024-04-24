@@ -3,7 +3,7 @@ extern crate tracing;
 
 use std::{error::Error, str::FromStr, time::Duration};
 
-use grpc::{EncoderService, build_extension};
+use grpc::{build_extension, EncoderService};
 
 use tokio::time::{sleep_until, Instant};
 use tracing::Level;

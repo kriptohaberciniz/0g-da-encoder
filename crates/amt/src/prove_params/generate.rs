@@ -157,9 +157,9 @@ impl<PE: Pairing> AMTParams<PE> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{TestParams, DOMAIN, PE, PP, TEST_LENGTH, TEST_LEVEL, W, G1PP, G2PP};
+    use super::super::tests::{TestParams, DOMAIN, G1PP, G2PP, PE, PP, TEST_LENGTH, TEST_LEVEL, W};
     use crate::ec_algebra::{
-        Fr, One, Pairing, VariableBaseMSM, Zero, G1, G2,EvaluationDomain, Field
+        EvaluationDomain, Field, Fr, One, Pairing, VariableBaseMSM, Zero, G1, G2,
     };
 
     fn simple_gen_basis(index: usize) -> G1<PE> {
