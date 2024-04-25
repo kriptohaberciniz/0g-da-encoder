@@ -94,7 +94,7 @@ fn _from_ppot_file<'a>(
                 CheckForCorrectness::Yes,
                 &input_map,
             )
-            .map_err(|_| format!("failed to read chunk"))?;
+            .map_err(|e| format!("failed to read chunk, detail: {}", e))?;
 
         g1.extend(
             accumulator.tau_powers_g1[..current_chunk_size]
@@ -157,5 +157,19 @@ mod tests {
         
         let pot: Result<PowerTau, String> = from_ppot_file(&input_path, input_type, file_size, read_from, read_size, chunk_size);
         assert!(matches!(pot, Err(ref msg) if msg == "too long to read"));
+    }
+
+    #[test]
+    fn test_load_from_response_28_nomal() {
+        let input_path = "/home/0g-da-encoder/crates/ppot2ark";
+        let input_type = InputType::Response;
+        let file_size = 22;
+        let read_from = 0;
+        let read_size = 22;
+        let chunk_size = 10;
+        
+        let pot = from_ppot_file(&input_path, input_type, file_size, read_from, read_size, chunk_size).unwrap();
+        assert_eq!(pot.0.len(), 1 << read_size);
+        assert_eq!(Bn254::pairing(pot.0[0], pot.1[4]), Bn254::pairing(pot.0[1], pot.1[3]));
     }
 }

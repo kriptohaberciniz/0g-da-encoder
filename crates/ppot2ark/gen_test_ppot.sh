@@ -33,6 +33,6 @@ fi
 
 # 输出response文件的哈希值
 echo "The BLAKE2b hash of the response file is:"
-b2sum response
+b2sum response_$degree
 
 echo "Done! The response file contains the Powers of Tau parameters."
