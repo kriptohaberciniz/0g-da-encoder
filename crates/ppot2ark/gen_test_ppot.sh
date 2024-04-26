@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 # 检查参数数量
 if [ "$#" -ne 1 ]; then
     echo "Usage: $0 <degree>"

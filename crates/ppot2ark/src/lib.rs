@@ -27,12 +27,12 @@ fn _from_ppot_file<'a>(
     input_path: &str,
     input_type: InputType,
     file_size: usize,
-    read_from_pow: usize,
+    read_from: usize,
     read_size_pow: usize,
     chunk_size_pow: usize,
     parameters: &'a CeremonyParams<Bn256>,
 ) -> Result<PowerTau, String> {
-    let read_from = (1 << read_from_pow) - 1;
+    // let read_from = (1 << read_from) - 1;
     let read_size = 1 << read_size_pow;
     let chunk_size = 1 << chunk_size_pow;
 
@@ -69,7 +69,7 @@ fn _from_ppot_file<'a>(
     let input_map = unsafe {
         MmapOptions::new()
             .map(&reader)
-            .map_err(|_| format!("unable to create a memory map for input"))?
+            .map_err(|e| format!("unable to create a memory map for input, detail: {}", e))?
     };
 
     let mut accumulator = BatchedAccumulator::empty(parameters);
@@ -117,13 +117,13 @@ fn _from_ppot_file<'a>(
 pub fn from_ppot_file<'a>(
     input_path: &str,
     input_type: InputType,
-    file_size: usize,
+    file_size_pow: usize,
     read_from: usize,
-    read_size: usize, 
-    chunk_size: usize
+    read_size_pow: usize, 
+    chunk_size_pow: usize
 ) -> Result<PowerTau, String> {
-    let params = CeremonyParams::<Bn256>::new(file_size, file_size);
-    _from_ppot_file(input_path, input_type, file_size, read_from, read_size, chunk_size, &params)
+    let params = CeremonyParams::<Bn256>::new(file_size_pow, file_size_pow);
+    _from_ppot_file(input_path, input_type, file_size_pow, read_from, read_size_pow, chunk_size_pow, &params)
 }
 
 #[cfg(test)]
@@ -134,15 +134,15 @@ mod tests {
     
     #[test]
     fn test_load_from_challenge_12_nomal() {
-        let input_path = "/home/0g-da-encoder/crates/ppot2ark";
+        let input_path = "/Users/wuwei/Downloads/projects/0g-da/0g-da-encoder/crates/ppot2ark";
         let input_type = InputType::Challenge;
-        let file_size = 12;
-        let read_from = 0;
-        let read_size = 12;
-        let chunk_size = 10;
+        let file_size_pow = 12;
+        let read_from = 3840;
+        let read_size_pow = 8;
+        let chunk_size_pow = 10;
         
-        let pot = from_ppot_file(&input_path, input_type, file_size, read_from, read_size, chunk_size).unwrap();
-        assert_eq!(pot.0.len(), 1 << read_size);
+        let pot = from_ppot_file(&input_path, input_type, file_size_pow, read_from, read_size_pow, chunk_size_pow).unwrap();
+        assert_eq!(pot.0.len(), 1 << read_size_pow);
         assert_eq!(Bn254::pairing(pot.0[0], pot.1[4]), Bn254::pairing(pot.0[1], pot.1[3]));
     }
 
@@ -150,26 +150,28 @@ mod tests {
     fn test_load_from_challenge_12_too_long() {
         let input_path = "/home/0g-da-encoder/crates/ppot2ark";
         let input_type = InputType::Challenge;
-        let file_size = 12;
-        let read_from = 1;
-        let read_size = 12;
-        let chunk_size = 10;
+        let file_size_pow = 12;
+        let read_from = 3841;
+        let read_size_pow = 8;
+        let chunk_size_pow = 10;
         
-        let pot: Result<PowerTau, String> = from_ppot_file(&input_path, input_type, file_size, read_from, read_size, chunk_size);
+        let pot = from_ppot_file(&input_path, input_type, file_size_pow, read_from, read_size_pow, chunk_size_pow);
         assert!(matches!(pot, Err(ref msg) if msg == "too long to read"));
     }
 
     #[test]
-    fn test_load_from_response_28_nomal() {
-        let input_path = "/home/0g-da-encoder/crates/ppot2ark";
+    fn test_load_from_high_deg_response_nomal() {
+        // expect to deg 28
+        let input_path = "/Users/wuwei/Downloads/projects/0g-da/0g-da-encoder/crates/ppot2ark";
         let input_type = InputType::Response;
-        let file_size = 22;
-        let read_from = 0;
-        let read_size = 22;
-        let chunk_size = 10;
+        let file_size_pow = 26;
+        let read_size_pow = 20;
+        let chunk_size_pow = 10;
+        let read_from = 2u32.pow(file_size_pow) - 2u32.pow(read_size_pow);
         
-        let pot = from_ppot_file(&input_path, input_type, file_size, read_from, read_size, chunk_size).unwrap();
-        assert_eq!(pot.0.len(), 1 << read_size);
+        let pot = from_ppot_file(&input_path, input_type, file_size_pow as usize, read_from as usize, read_size_pow as usize, chunk_size_pow).unwrap();
+        println!("powers length: {}", pot.0.len());
+        assert_eq!(pot.0.len(), 1 << read_size_pow);
         assert_eq!(Bn254::pairing(pot.0[0], pot.1[4]), Bn254::pairing(pot.0[1], pot.1[3]));
     }
 }
