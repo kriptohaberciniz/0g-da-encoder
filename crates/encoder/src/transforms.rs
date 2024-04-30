@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::types::*;
-use amt::EncoderContext;
+use amt::{EncoderContext, PowerTau};
 use ark_bn254::{Bn254, Fr as Scalar, G1Affine, G1Projective, G2Projective};
 use ark_ec::{
     pairing::{Pairing, PairingOutput},
@@ -13,26 +13,26 @@ use ark_serialize::{CanonicalSerialize, SerializationError};
 use ark_std::{iterable::Iterable, Zero};
 use binary_merkle_tree::{merkle_proof, merkle_root, verify_proof};
 use ethereum_types::H256;
-use keccak_hasher::KeccakHasher;
 use hash_db::Hasher;
+use keccak_hasher::KeccakHasher;
 
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct Keccak256;
 impl Hasher for Keccak256 {
-	type Out = H256;
+    type Out = H256;
 
-	type StdHasher = <KeccakHasher as Hasher>::StdHasher;
+    type StdHasher = <KeccakHasher as Hasher>::StdHasher;
 
-	const LENGTH: usize = 32;
+    const LENGTH: usize = 32;
 
-	fn hash(x: &[u8]) -> Self::Out {
-		H256(KeccakHasher::hash(x))
-	}
+    fn hash(x: &[u8]) -> Self::Out {
+        H256(KeccakHasher::hash(x))
+    }
 }
 
 //use once_cell::sync::Lazy;
 // use transpose::transpose;
-type PE = Bn254;
+pub type PE = Bn254;
 
 fn raw_unit_to_scalar(chunk: &[u8]) -> Scalar {
     // <Scalar as PrimeField>::from_le_bytes_mod_order(&chunk) // 76ms
@@ -94,33 +94,33 @@ pub fn raw_blob_to_encoded_amt(
     }
 }
 
-pub fn coeffs_to_commitment(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> G1Affine {
+pub fn coeffs_to_commitment(coeffs: &Vec<Scalar>, pp: &PowerTau<PE>) -> G1Affine {
     let coeffs_repr: Vec<_> = coeffs.iter().map(|x| MontConfig::into_bigint(*x)).collect();
-    G1Projective::msm_bigint(&setup.setup_g1[..coeffs_repr.len()], &coeffs_repr).into_affine()
-    //G1Projective::msm(&setup.setup_g1[..coeffs.len()], &coeffs).unwrap().into_affine()
+    G1Projective::msm_bigint(&pp.0[..coeffs_repr.len()], &coeffs_repr).into_affine()
+    //G1Projective::msm(&pp.0[..coeffs.len()], &coeffs).unwrap().into_affine()
 }
 
 pub fn evals_to_commitment(
     _evals: &[Scalar],
     domain: Radix2EvaluationDomain<Scalar>,
-    setup: &SimulateSetup,
+    pp: &PowerTau<PE>,
 ) -> G1Affine {
     let mut evals = _evals.to_vec();
     domain.ifft_in_place(&mut evals);
-    coeffs_to_commitment(&evals, setup)
+    coeffs_to_commitment(&evals, pp)
 }
 
 /// KZG commit for each row of raw_blob
 pub fn encoded_to_row_commitments(
     encoded: &EncodedBlobScalars,
-    setup: &SimulateSetup,
+    pp: &PowerTau<PE>,
 ) -> RowCommitments {
     // all rows use the same domain_blob_col_n
     let domain_blob_col_n = Radix2EvaluationDomain::<Scalar>::new(BLOB_COL_N).unwrap();
     // KZG commitment
     let row_commitments: Vec<_> = encoded
         .chunks(BLOB_COL_N)
-        .map(|row| evals_to_commitment(row, domain_blob_col_n, setup))
+        .map(|row| evals_to_commitment(row, domain_blob_col_n, pp))
         .collect();
     RowCommitments(row_commitments)
 }
@@ -133,7 +133,7 @@ pub fn g1_to_scalar(g1: &G1Affine) -> Result<Scalar, SerializationError> {
     ))
 }
 
-pub fn coeffs_to_proof_trivial(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> Vec<G1Affine> {
+pub fn coeffs_to_proof_trivial(coeffs: &Vec<Scalar>, pp: &PowerTau<PE>) -> Vec<G1Affine> {
     let num_coeffs = coeffs.len();
     let domain_blob_row_n2 = Radix2EvaluationDomain::<Scalar>::new(num_coeffs).unwrap();
     (0..num_coeffs)
@@ -146,7 +146,7 @@ pub fn coeffs_to_proof_trivial(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> V
                 //dbg!(quotient_coeffs[t]);
             }
             //assert_eq!(quotient_coeffs[num_coeffs - 2], coeffs[num_coeffs - 1]);
-            let proof_i = coeffs_to_commitment(&quotient_coeffs, setup);
+            let proof_i = coeffs_to_commitment(&quotient_coeffs, pp);
             //dbg!(i);
             //assert_eq!(proof_0, h[i].into_affine());
             proof_i
@@ -154,7 +154,7 @@ pub fn coeffs_to_proof_trivial(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> V
         .collect::<Vec<G1Affine>>()
 }
 
-pub fn coeffs_to_proof_multiple(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> Vec<G1Affine> {
+pub fn coeffs_to_proof_multiple(coeffs: &Vec<Scalar>, pp: &PowerTau<PE>) -> Vec<G1Affine> {
     let mut coeffs: VecDeque<Scalar> = coeffs.clone().into();
     coeffs.pop_front();
     coeffs.push_back(Scalar::zero());
@@ -169,7 +169,7 @@ pub fn coeffs_to_proof_multiple(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> 
     let domain_blob_row_n2 = Radix2EvaluationDomain::<Scalar>::new(num_coeffs).unwrap();
     let domain_blob_row_n4 = Radix2EvaluationDomain::<Scalar>::new(num_coeffs << 1).unwrap();
 
-    let mut right: Vec<G1Projective> = setup.setup_g1[..num_coeffs]
+    let mut right: Vec<G1Projective> = pp.0[..num_coeffs]
         .iter()
         .map(|x| x.clone().into_group())
         .collect();
@@ -194,7 +194,7 @@ pub fn coeffs_to_proof_multiple(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> 
     // dbg!(num_coeffs);
     // for i in 0..num_coeffs {
     //     dbg!(i);
-    //     let h_i: G1Projective = setup.setup_g1[..(num_coeffs - i)].iter().zip(coeffs[i..].iter()).map(|(ss, ff)| *ss * ff).sum();
+    //     let h_i: G1Projective = pp.0[..(num_coeffs - i)].iter().zip(coeffs[i..].iter()).map(|(ss, ff)| *ss * ff).sum();
     //     assert_eq!(h_i.into_affine(), h[i].into_affine());
     // }
     // // h_i = s_0 * f_i + s_1 * f_{i+1} + ... + s_{m-1-i} * f_{m-1}, i = 0, ..., m-1
@@ -215,18 +215,18 @@ pub fn coeffs_to_proof_multiple(coeffs: &Vec<Scalar>, setup: &SimulateSetup) -> 
 
 pub fn encoded_to_kzg(
     encoded: EncodedBlobScalars,
-    setup: &SimulateSetup,
+    pp: &PowerTau<PE>,
 ) -> Result<EncodedBlobKZG, String> {
     //EncodedBlob {
-    if setup.setup_g1.len() < std::cmp::max(BLOB_COL_N, BLOB_ROW_N2) {
+    if pp.0.len() < std::cmp::max(BLOB_COL_N, BLOB_ROW_N2) {
         return Err(format!(
             "The degree of setup_g1 {} is less than required {}",
-            setup.setup_g1.len(),
+            pp.0.len(),
             std::cmp::max(BLOB_COL_N, BLOB_ROW_N2)
         ));
     }
     // commit for each row of encoded
-    let row_commitments = encoded_to_row_commitments(&encoded, setup);
+    let row_commitments = encoded_to_row_commitments(&encoded, pp);
     // commit for row_commitments & obtain proofs
     let mut row_commitments_scalars = row_commitments
         .iter()
@@ -235,9 +235,9 @@ pub fn encoded_to_kzg(
         .map_err(|err| format!("SerializationError in g1_to_scalar(), err = {}", err))?;
     let domain_blob_row_n2 = Radix2EvaluationDomain::<Scalar>::new(BLOB_ROW_N2).unwrap();
     domain_blob_row_n2.ifft_in_place(&mut row_commitments_scalars);
-    let da_commitment = coeffs_to_commitment(&row_commitments_scalars, setup);
-    //let da_proofs_trivial = coeffs_to_proof_trivial(&row_commitments_scalars, setup);
-    let da_proofs = coeffs_to_proof_multiple(&row_commitments_scalars, setup);
+    let da_commitment = coeffs_to_commitment(&row_commitments_scalars, pp);
+    //let da_proofs_trivial = coeffs_to_proof_trivial(&row_commitments_scalars, pp);
+    let da_proofs = coeffs_to_proof_multiple(&row_commitments_scalars, pp);
     //dbg!(da_commitment);
     //dbg!(&da_proofs_trivial);
     //dbg!(&da_proofs);
@@ -256,13 +256,13 @@ pub fn verify_kzg(
     da_commitment: G1Affine,
     da_proof: G1Affine,
     domain: Scalar,
-    setup: &SimulateSetup,
+    pp: &PowerTau<PE>,
 ) -> bool {
-    let h: G2Projective = setup.setup_g2[0].into_group();
-    let zs2: G2Projective = setup.setup_g2[1].into_group() - setup.setup_g2[0] * domain;
-    let is1: G1Projective = setup.setup_g1[0] * row_commitment_scalar;
-    // assert_eq!(setup.setup_g1[0], G1Affine::generator());
-    // assert_eq!(setup.setup_g2[0], G2Affine::generator());
+    let h: G2Projective = pp.1[0].into_group();
+    let zs2: G2Projective = pp.1[1].into_group() - pp.1[0] * domain;
+    let is1: G1Projective = pp.0[0] * row_commitment_scalar;
+    // assert_eq!(pp.0[0], G1Affine::generator());
+    // assert_eq!(pp.1[0], G2Affine::generator());
     // e(da_proof, zs2) = e(da_commitment - is1, h)
     let e_proof: PairingOutput<Bn254> = Pairing::pairing(da_proof, zs2);
     let e_commitment: PairingOutput<Bn254> = Pairing::pairing(da_commitment.into_group() - is1, h);
@@ -303,12 +303,10 @@ pub fn encoded_h256s_to_merkle(encoded: EncodedBlobH256s) -> EncodedBlobMerkle {
 }
 
 pub fn data_to_encoded_blob_amt(
-    data: &[u8],
-    setup: &SimulateSetup,
+    raw_data: &RawData,
+    pp: &PowerTau<PE>,
     encoder_amt: &EncoderContext<PE>,
 ) -> Result<EncodedBlobAMT<PE, BLOB_COL_LOG, BLOB_ROW_LOG>, String> {
-    // zero-padding original data to raw_data
-    let raw_data: RawData = RawData::try_from(data)?;
     // raw_data_to_raw_blob
     let raw_blob = raw_data_to_raw_blob(&raw_data);
     // encode
@@ -321,7 +319,7 @@ pub fn data_to_encoded_blob_amt(
         .concat(),
     );
     // KZG
-    let encoded_blob_kzg = encoded_to_kzg(encoded, &setup).unwrap();
+    let encoded_blob_kzg = encoded_to_kzg(encoded, pp).unwrap();
     // prepare H256 for Merkle
     let encoded_h256 =
         EncodedBlobH256s(encoded_blob_scalars_to_h256s(&encoded_blob_kzg.encoded).unwrap());
@@ -335,7 +333,7 @@ pub fn data_to_encoded_blob_amt(
     })
 }
 
-pub fn data_to_encoded_blob(data: &[u8], setup: &SimulateSetup) -> Result<EncodedBlob, String> {
+pub fn data_to_encoded_blob(data: &[u8], pp: &PowerTau<PE>) -> Result<EncodedBlob, String> {
     // zero-padding original data to raw_data
     let raw_data: RawData = RawData::try_from(data)?;
     // raw_data_to_raw_blob
@@ -343,7 +341,7 @@ pub fn data_to_encoded_blob(data: &[u8], setup: &SimulateSetup) -> Result<Encode
     // encode
     let encoded: EncodedBlobScalars = raw_blob_to_encoded(&raw_blob);
     // KZG
-    let encoded_blob_kzg = encoded_to_kzg(encoded, &setup).unwrap();
+    let encoded_blob_kzg = encoded_to_kzg(encoded, pp).unwrap();
     // prepare H256 for Merkle
     let encoded_h256 =
         EncodedBlobH256s(encoded_blob_scalars_to_h256s(&encoded_blob_kzg.encoded).unwrap());
@@ -436,7 +434,7 @@ pub fn encoded_blob_to_slice_amt(
     })
 }
 
-pub fn verify_slice(encoded_slice: &EncodedSlice, setup: &SimulateSetup) -> bool {
+pub fn verify_slice(encoded_slice: &EncodedSlice, pp: &PowerTau<PE>) -> bool {
     // verify index
     if encoded_slice.index >= BLOB_ROW_N2
         || encoded_slice.index != encoded_slice.merkle.merkle_proof.leaf_index
@@ -459,7 +457,7 @@ pub fn verify_slice(encoded_slice: &EncodedSlice, setup: &SimulateSetup) -> bool
     }
     // verify KZG local
     let domain_blob_col_n = Radix2EvaluationDomain::<Scalar>::new(BLOB_COL_N).unwrap();
-    let kzg_local = evals_to_commitment(&encoded_slice.kzg.encoded, domain_blob_col_n, setup);
+    let kzg_local = evals_to_commitment(&encoded_slice.kzg.encoded, domain_blob_col_n, pp);
     if kzg_local != encoded_slice.kzg.row_commitment {
         return false;
     }
@@ -479,7 +477,7 @@ pub fn verify_slice(encoded_slice: &EncodedSlice, setup: &SimulateSetup) -> bool
         encoded_slice.kzg.da_commitment,
         encoded_slice.kzg.da_proof,
         domain,
-        setup,
+        pp,
     );
     if !verify_kzg_global {
         return false;
@@ -501,7 +499,7 @@ pub fn verify_slice(encoded_slice: &EncodedSlice, setup: &SimulateSetup) -> bool
 
 pub fn verify_slice_amt(
     encoded_slice: &EncodedSliceAMT<PE, BLOB_COL_LOG, BLOB_ROW_LOG>,
-    setup: &SimulateSetup,
+    pp: &PowerTau<PE>,
     encoder_amt: &EncoderContext<PE>,
 ) -> bool {
     // verify index
@@ -554,7 +552,7 @@ pub fn verify_slice_amt(
     }
     // verify KZG local
     let domain_blob_col_n = Radix2EvaluationDomain::<Scalar>::new(BLOB_COL_N).unwrap();
-    let kzg_local = evals_to_commitment(&encoded_slice.kzg.encoded, domain_blob_col_n, setup);
+    let kzg_local = evals_to_commitment(&encoded_slice.kzg.encoded, domain_blob_col_n, pp);
     if kzg_local != encoded_slice.kzg.row_commitment {
         return false;
     }
@@ -574,7 +572,7 @@ pub fn verify_slice_amt(
         encoded_slice.kzg.da_commitment,
         encoded_slice.kzg.da_proof,
         domain,
-        setup,
+        pp,
     );
     if !verify_kzg_global {
         return false;
@@ -687,13 +685,9 @@ mod tests {
         );
 
         // KZG
-        // let setup = SimulateSetup::sim_load();
-        let setup = SimulateSetup {
-            setup_g1: G1PP.to_vec(),
-            setup_g2: G2PP.to_vec(),
-        };
+        let pp = &*PP;
         let start = Instant::now();
-        let encoded_blob_kzg = encoded_to_kzg(encoded, &setup).unwrap();
+        let encoded_blob_kzg = encoded_to_kzg(encoded, &pp).unwrap();
         let duration = start.elapsed().as_millis();
         println!(
             "Time taken for encoded_to_KZG: {:?}ms with original {} bytes and raw_data {} bytes",
@@ -712,7 +706,7 @@ mod tests {
                 encoded_blob_kzg.da_commitment,
                 encoded_blob_kzg.da_proofs[i],
                 domain,
-                &setup,
+                &pp,
             );
             assert!(verify_row_i);
         }
@@ -768,12 +762,10 @@ mod tests {
         rng.fill(&mut data[..]);
 
         //let setup = SimulateSetup::sim_load();
-        let setup = SimulateSetup {
-            setup_g1: G1PP.to_vec(),
-            setup_g2: G2PP.to_vec(),
-        };
+        let pp = &*PP;
         //let encoded_blob = data_to_encoded_blob(data.as_slice(), &setup)?;
-        let encoded_blob = data_to_encoded_blob_amt(data.as_slice(), &setup, &ENCODER)?;
+        let raw_data = data[..].try_into().unwrap();
+        let encoded_blob = data_to_encoded_blob_amt(&raw_data, &pp, &ENCODER)?;
 
         Ok(())
     }
@@ -785,30 +777,26 @@ mod tests {
         let mut data = vec![0u8; RAW_UNIT * BLOB_ROW_N * BLOB_COL_N];
         rng.fill(&mut data[..]);
 
-        // let setup = SimulateSetup::sim_load();
-        let setup = SimulateSetup {
-            setup_g1: G1PP.to_vec(),
-            setup_g2: G2PP.to_vec(),
-        };
-        let encoded_blob = data_to_encoded_blob(data.as_slice(), &setup).unwrap();
+        let pp = &*PP;
+        let encoded_blob = data_to_encoded_blob(data.as_slice(), pp).unwrap();
 
         let mut encoded_slice_0 = encoded_blob_to_slice(&encoded_blob, 0).unwrap();
-        assert!(verify_slice(&encoded_slice_0, &setup));
+        assert!(verify_slice(&encoded_slice_0, pp));
         encoded_slice_0.index = 1;
-        assert!(!verify_slice(&encoded_slice_0, &setup));
+        assert!(!verify_slice(&encoded_slice_0, pp));
         encoded_slice_0.index = BLOB_ROW_N2;
-        assert!(!verify_slice(&encoded_slice_0, &setup));
+        assert!(!verify_slice(&encoded_slice_0, pp));
         let mut encoded_slice_max = encoded_blob_to_slice(&encoded_blob, BLOB_ROW_N2 - 1).unwrap();
-        assert!(verify_slice(&encoded_slice_max, &setup));
+        assert!(verify_slice(&encoded_slice_max, pp));
         encoded_slice_max.merkle.merkle_proof.leaf_index = 1;
-        assert!(!verify_slice(&encoded_slice_max, &setup));
+        assert!(!verify_slice(&encoded_slice_max, pp));
         encoded_blob_to_slice(&encoded_blob, BLOB_ROW_N2)
             .expect_err("Expected error for overflow row index");
 
         for index in 0..BLOB_ROW_N2 {
             assert!(verify_slice(
                 &encoded_blob_to_slice(&encoded_blob, index).unwrap(),
-                &setup
+                pp
             ));
         }
     }
@@ -821,30 +809,28 @@ mod tests {
         rng.fill(&mut data[..]);
 
         // let setup = SimulateSetup::sim_load();
-        let setup = SimulateSetup {
-            setup_g1: G1PP.to_vec(),
-            setup_g2: G2PP.to_vec(),
-        };
-        let encoded_blob = data_to_encoded_blob_amt(data.as_slice(), &setup, &ENCODER).unwrap();
+        let pp = &*PP;
+        let raw_data = data[..].try_into().unwrap();
+        let encoded_blob = data_to_encoded_blob_amt(&raw_data, pp, &ENCODER).unwrap();
 
         let mut encoded_slice_0 = encoded_blob_to_slice_amt(&encoded_blob, 0).unwrap();
-        assert!(verify_slice_amt(&encoded_slice_0, &setup, &ENCODER));
+        assert!(verify_slice_amt(&encoded_slice_0, pp, &ENCODER));
         encoded_slice_0.index = 1;
-        assert!(!verify_slice_amt(&encoded_slice_0, &setup, &ENCODER));
+        assert!(!verify_slice_amt(&encoded_slice_0, pp, &ENCODER));
         encoded_slice_0.index = BLOB_ROW_N2;
-        assert!(!verify_slice_amt(&encoded_slice_0, &setup, &ENCODER));
+        assert!(!verify_slice_amt(&encoded_slice_0, pp, &ENCODER));
         let mut encoded_slice_max =
             encoded_blob_to_slice_amt(&encoded_blob, BLOB_ROW_N2 - 1).unwrap();
-        assert!(verify_slice_amt(&encoded_slice_max, &setup, &ENCODER));
+        assert!(verify_slice_amt(&encoded_slice_max, pp, &ENCODER));
         encoded_slice_max.merkle.merkle_proof.leaf_index = 1;
-        assert!(!verify_slice_amt(&encoded_slice_max, &setup, &ENCODER));
+        assert!(!verify_slice_amt(&encoded_slice_max, pp, &ENCODER));
         encoded_blob_to_slice_amt(&encoded_blob, BLOB_ROW_N2)
             .expect_err("Expected error for overflow row index");
 
         for index in 0..BLOB_ROW_N2 {
             assert!(verify_slice_amt(
                 &encoded_blob_to_slice_amt(&encoded_blob, index).unwrap(),
-                &setup,
+                pp,
                 &ENCODER
             ));
         }

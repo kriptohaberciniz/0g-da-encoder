@@ -137,42 +137,6 @@ impl DerefMut for RowCommitments {
 //     }
 // }
 
-#[derive(Clone)]
-pub struct SimulateSetup {
-    pub setup_g1: Vec<G1Affine>,
-    pub setup_g2: Vec<G2Affine>,
-} // >= num_cols for each row's commitment
-
-//pub const KZG_SETUP_N: usize = BLOB_ROW_N2; // std::cmp::max(BLOB_ROW_N2, BLOB_COL_N);
-pub const KZG_SETUP_N_G2: usize = 1 << 1;
-impl SimulateSetup {
-    pub fn sim_load() -> Self {
-        use ark_std::rand::thread_rng;
-        let mut rng = thread_rng();
-        let s: Scalar = Scalar::rand(&mut rng);
-        //let s = <Scalar as Field>::from_random_bytes(&(3usize.to_le_bytes())).unwrap(); //
-        let mut all_s: Vec<Scalar> = vec![s; std::cmp::max(BLOB_ROW_N2, BLOB_COL_N)];
-        all_s[0] = Scalar::one();
-        all_s = all_s
-            .iter()
-            .scan(Scalar::one(), |state, &x| {
-                *state *= x;
-                Some(*state)
-            })
-            .collect();
-        //println!("{:?}", all_s); //
-        let setup_g1: Vec<G1Affine> = all_s
-            .iter()
-            .map(|x| (G1Affine::generator() * x).into_affine())
-            .collect();
-        let setup_g2: Vec<G2Affine> = all_s[..KZG_SETUP_N_G2]
-            .iter()
-            .map(|x| (G2Affine::generator() * x).into_affine())
-            .collect();
-        Self { setup_g1, setup_g2 }
-    }
-}
-
 pub struct EncodedBlobKZG {
     pub encoded: EncodedBlobScalars,
     pub row_commitments: RowCommitments,

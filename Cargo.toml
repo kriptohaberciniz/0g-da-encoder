@@ -15,7 +15,7 @@ types = { path = "./types" }
 amt = { path = "./crates/amt", default-features = false }
 grpc = { path = "./grpc" } 
 server = { path = "./server" } 
-encoder = {path = "./crates/encoder" }
+zg-encoder = { path = "./crates/encoder" }
 
 [profile.dev.package]
 rayon = { opt-level = 3 }

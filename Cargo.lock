@@ -1003,12 +1003,14 @@ checksum = "4271d37baee1b8c7e4b708028c57d816cf9d2434acb33a549475f78c181f6253"
 name = "grpc"
 version = "0.1.0"
 dependencies = [
+ "amt",
  "once_cell",
  "prost",
  "tonic",
  "tonic-build",
  "tracing",
  "types",
+ "zg-encoder",
 ]
 
 [[package]]
@@ -3017,4 +3019,24 @@ dependencies = [
  "proc-macro2 1.0.79",
  "quote 1.0.35",
  "syn 2.0.53",
+]
+
+[[package]]
+name = "zg-encoder"
+version = "0.1.0"
+dependencies = [
+ "amt",
+ "ark-bn254",
+ "ark-ec",
+ "ark-ff",
+ "ark-poly",
+ "ark-serialize",
+ "ark-std",
+ "binary-merkle-tree",
+ "ethereum-types",
+ "hash-db",
+ "keccak-hasher",
+ "once_cell",
+ "rand",
+ "test-case",
 ]
