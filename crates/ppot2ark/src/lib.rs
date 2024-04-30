@@ -4,23 +4,34 @@ mod adapter;
 
 pub use adapter::Adapter;
 
+pub use ark_ec::pairing::Pairing;
 pub use bellman_ce::pairing::bn256::Bn256;
 pub use powersoftau::batched_accumulator::BatchedAccumulator;
 pub use powersoftau::parameters::{CeremonyParams, CheckForCorrectness, UseCompression};
 
 use memmap::MmapOptions;
-use std::fs::{read, OpenOptions};
+use std::fs::{self, read, OpenOptions};
 
-pub use ark_ec::PairingEngine;
-pub type G1Aff<PE> = <PE as PairingEngine>::G1Affine;
-pub type G2Aff<PE> = <PE as PairingEngine>::G2Affine;
 use ark_bn254::Bn254;
-pub struct PowerTau(pub Vec<G1Aff<Bn254>>, pub Vec<G2Aff<Bn254>>);
+type PowerTau = amt::PowerTau<Bn254>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum InputType {
     Challenge,
     Response,
+}
+
+impl InputType {
+    fn file_name(&self, degree: usize) -> String {
+        format!(
+            "{}_{}",
+            match self {
+                InputType::Challenge => "challenge",
+                InputType::Response => "response",
+            },
+            degree
+        )
+    }
 }
 
 fn _from_ppot_file<'a>(
@@ -40,31 +51,12 @@ fn _from_ppot_file<'a>(
         return Err(format!("too long to read"));
     }
 
-    let input_filename = format!(
-        "{}/{}_{}",
-        input_path,
-        match input_type {
-            InputType::Challenge => "challenge",
-            InputType::Response => "response",
-            _ => return Err(format!("unsupport input type")),
-        },
-        file_size
-    );
+    let input_filename = format!("{}/{}", input_path, input_type.file_name(file_size));
 
-    let reader = match OpenOptions::new().read(true).open(&input_filename) {
-        Ok(reader) => reader,
-        Err(err) => match err.kind() {
-            std::io::ErrorKind::NotFound => {
-                return Err(format!("file {} not exist", input_filename));
-            }
-            std::io::ErrorKind::PermissionDenied => {
-                return Err(format!("permission denied {}", input_filename));
-            }
-            _ => {
-                return Err(format!("open {} err: {}", input_filename, err));
-            }
-        },
-    };
+    let reader = OpenOptions::new()
+        .read(true)
+        .open(&input_filename)
+        .map_err(|e| format!("Cannot open {}: {:?}", input_filename, e))?;
 
     let input_map = unsafe {
         MmapOptions::new()
@@ -111,7 +103,7 @@ fn _from_ppot_file<'a>(
         remaining_size -= current_chunk_size;
     }
 
-    Ok(PowerTau(g1, g2))
+    Ok(amt::PowerTau(g1, g2))
 }
 
 pub fn from_ppot_file<'a>(
@@ -119,59 +111,127 @@ pub fn from_ppot_file<'a>(
     input_type: InputType,
     file_size_pow: usize,
     read_from: usize,
-    read_size_pow: usize, 
-    chunk_size_pow: usize
+    read_size_pow: usize,
+    chunk_size_pow: usize,
 ) -> Result<PowerTau, String> {
     let params = CeremonyParams::<Bn256>::new(file_size_pow, file_size_pow);
-    _from_ppot_file(input_path, input_type, file_size_pow, read_from, read_size_pow, chunk_size_pow, &params)
+    _from_ppot_file(
+        input_path,
+        input_type,
+        file_size_pow,
+        read_from,
+        read_size_pow,
+        chunk_size_pow,
+        &params,
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs::read;
+    use std::{fs::read, path::PathBuf, process::Command};
 
     use super::*;
-    
+    use project_root;
+
+    fn crate_path() -> String {
+        let mut p = project_root::get_project_root().unwrap();
+        p.push("crates/ppot2ark");
+        p.to_str().unwrap().into()
+    }
+
+    fn data_path() -> String {
+        format!("{}/data", crate_path())
+    }
+
+    fn prepare_test_file(ty: InputType, degree: usize) {
+        let target_file = format!("{}/{}", data_path(), ty.file_name(degree));
+        let script = format!("{}/gen_test_ppot.sh", crate_path());
+
+        if std::fs::metadata(target_file.clone()).is_ok() {
+            return;
+        }
+
+        println!("{} not found, building...", target_file);
+
+        Command::new("bash")
+            .arg(script) 
+            .arg(degree.to_string())
+            .output()
+            .expect("Failed to execute command");
+    }
+
     #[test]
     fn test_load_from_challenge_12_nomal() {
-        let input_path = "/Users/wuwei/Downloads/projects/0g-da/0g-da-encoder/crates/ppot2ark";
+        let input_path = format!("{}/data", crate_path());
         let input_type = InputType::Challenge;
         let file_size_pow = 12;
         let read_from = 3840;
         let read_size_pow = 8;
         let chunk_size_pow = 10;
-        
-        let pot = from_ppot_file(&input_path, input_type, file_size_pow, read_from, read_size_pow, chunk_size_pow).unwrap();
+
+        prepare_test_file(input_type, file_size_pow);
+        let pot = from_ppot_file(
+            &input_path,
+            input_type,
+            file_size_pow,
+            read_from,
+            read_size_pow,
+            chunk_size_pow,
+        )
+        .unwrap();
         assert_eq!(pot.0.len(), 1 << read_size_pow);
-        assert_eq!(Bn254::pairing(pot.0[0], pot.1[4]), Bn254::pairing(pot.0[1], pot.1[3]));
+        assert_eq!(
+            Bn254::pairing(pot.0[0], pot.1[4]),
+            Bn254::pairing(pot.0[1], pot.1[3])
+        );
     }
 
     #[test]
     fn test_load_from_challenge_12_too_long() {
-        let input_path = "/home/0g-da-encoder/crates/ppot2ark";
+        let input_path = format!("{}/data", crate_path());
         let input_type = InputType::Challenge;
         let file_size_pow = 12;
         let read_from = 3841;
         let read_size_pow = 8;
         let chunk_size_pow = 10;
-        
-        let pot = from_ppot_file(&input_path, input_type, file_size_pow, read_from, read_size_pow, chunk_size_pow);
+
+        prepare_test_file(input_type, file_size_pow);
+        let pot = from_ppot_file(
+            &input_path,
+            input_type,
+            file_size_pow,
+            read_from,
+            read_size_pow,
+            chunk_size_pow,
+        );
         assert!(matches!(pot, Err(ref msg) if msg == "too long to read"));
     }
 
     #[test]
     fn test_load_from_high_deg_response_nomal() {
         // expect to deg 28
-        let input_path = "/Users/wuwei/Downloads/projects/0g-da/0g-da-encoder/crates/ppot2ark";
+        let input_path = format!("{}/data", crate_path());
         let input_type = InputType::Response;
         let file_size_pow = 26;
         let read_size_pow = 20;
         let chunk_size_pow = 10;
         let read_from = 2u32.pow(file_size_pow) - 2u32.pow(read_size_pow);
-        
-        let pot = from_ppot_file(&input_path, input_type, file_size_pow as usize, read_from as usize, read_size_pow as usize, chunk_size_pow).unwrap();
+
+        prepare_test_file(input_type, file_size_pow as usize);
+        let pot = from_ppot_file(
+            &input_path,
+            input_type,
+            file_size_pow as usize,
+            read_from as usize,
+            read_size_pow as usize,
+            chunk_size_pow,
+        )
+        .unwrap();
         println!("powers length: {}", pot.0.len());
         assert_eq!(pot.0.len(), 1 << read_size_pow);
-        assert_eq!(Bn254::pairing(pot.0[0], pot.1[4]), Bn254::pairing(pot.0[1], pot.1[3]));
+        assert_eq!(
+            Bn254::pairing(pot.0[0], pot.1[4]),
+            Bn254::pairing(pot.0[1], pot.1[3])
+        );
     }
 }

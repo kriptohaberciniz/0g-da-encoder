@@ -2,6 +2,12 @@
 
 set -e
 
+cd $(dirname "$0")
+
+if [ ! -d "data" ]; then
+    mkdir -p ./data
+fi
+
 # 检查参数数量
 if [ "$#" -ne 1 ]; then
     echo "Usage: $0 <degree>"
@@ -16,22 +22,13 @@ pot_size=$((2**degree))
 echo $pot_size
 
 # 克隆phase2-bn254库
-if [ ! -d "phase2-bn254" ]; then
-    git clone https://github.com/kobigurk/phase2-bn254.git
-    echo '' >> phase2-bn254/powersoftau/Cargo.toml
-    echo '[workspace]' >> phase2-bn254/powersoftau/Cargo.toml
-    cd phase2-bn254/powersoftau
-    cargo build --release
-    cd ../../
-else
-    echo "phase2-bn254 directory already exists, skipping clone and build."
-fi
+cargo install --git https://github.com/kobigurk/phase2-bn254.git --rev dd6b966 powersoftau --bin new_constrained --bin compute_constrained
 
 # 生成初始challenge文件
-./phase2-bn254/powersoftau/target/release/new_constrained challenge_$degree $degree $pot_size
+new_constrained data/challenge_$degree $degree $pot_size
 
 # 生成response文件
-./phase2-bn254/powersoftau/target/release/compute_constrained challenge_$degree response_$degree $degree $pot_size <<< "some random text"
+compute_constrained data/challenge_$degree data/response_$degree $degree $pot_size <<< "some random text"
 
 # 输出response文件的哈希值
 echo "The BLAKE2b hash of the response file is:"

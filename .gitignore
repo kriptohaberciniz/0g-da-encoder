@@ -4,4 +4,5 @@ target
 .vscode
 
 crates/amt/pp
+crates/ppot2ark/data
 /pp
